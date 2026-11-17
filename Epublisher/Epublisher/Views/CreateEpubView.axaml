@@ -1,0 +1,268 @@
+<ContentPage xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:Epublisher.ViewModels"
+             xmlns:models="using:Epublisher.DataEntities"
+             x:Class="Epublisher.Views.CreateEpubView"
+             x:DataType="vm:CreateEpubViewModel"
+             Header="{Binding BookTitle}">
+  <Grid RowDefinitions="Auto, *">
+        <!-- ВЕРХНЯЯ ПАНЕЛЬ: Метаданные книги и кнопка экспорта -->
+        <Border Grid.Row="0"
+                Padding="12,8"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+            <Grid ColumnDefinitions="2*, *, 70, Auto, Auto" ColumnSpacing="8">
+                <TextBox Grid.Column="0"
+                         Text="{Binding BookTitle, Mode=TwoWay}"
+                         PlaceholderText="{DynamicResource Editor.BookTitlePlaceholder}" />
+                <TextBox Grid.Column="1"
+                         Text="{Binding BookAuthor, Mode=TwoWay}"
+                         PlaceholderText="{DynamicResource Editor.BookAuthorPlaceholder}" />
+                <TextBox Grid.Column="2"
+                         Text="{Binding BookLanguage, Mode=TwoWay}"
+                         PlaceholderText="{DynamicResource Editor.BookLanguagePlaceholder}" />
+
+                <Button Grid.Column="3"
+                        Command="{Binding SaveAndRebuildPreviewCommand}"
+                        Padding="10,6"
+                        ToolTip.Tip="{DynamicResource Editor.RefreshPreviewTooltip}">
+                    <PathIcon Data="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"
+                              Width="15" Height="15" />
+                </Button>
+
+                <Button Grid.Column="4"
+                        Command="{Binding ExportEpubCommand}"
+                        Classes="accent"
+                        Padding="12,6"
+                        Content="{DynamicResource Editor.ExportButton}" />
+            </Grid>
+        </Border>
+
+        <!-- ОСНОВНАЯ РАБОЧАЯ ОБЛАСТЬ: Главы | Splitter | Редактор | Splitter | Живое превью -->
+<Grid Grid.Row="1">
+    <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="220" MinWidth="140" />
+        <ColumnDefinition Width="4" />
+        <ColumnDefinition Width="*" MinWidth="250" />
+        <ColumnDefinition Width="4" />
+        <ColumnDefinition Width="*" MinWidth="250" />
+    </Grid.ColumnDefinitions>
+
+    <!-- 1. ЛЕВАЯ КОЛОНКА: Список глав и оглавление -->
+<Border Grid.Column="0" Padding="8">
+    <DockPanel>
+        <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="4,4,4,8">
+            <Grid ColumnDefinitions="*, Auto">
+                <TextBlock Grid.Column="0"
+                           Text="{DynamicResource Editor.ChaptersHeader}"
+                           FontWeight="Bold"
+                           VerticalAlignment="Center" />
+                <Button Grid.Column="1"
+                        Command="{Binding AddChapterCommand}"
+                        Padding="8,4"
+                        Content="{DynamicResource Editor.AddChapterButton}" />
+            </Grid>
+
+            <Button Command="{Binding GenerateOrUpdateTocPageCommand}"
+                    HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Center"
+                    Padding="8,5"
+                    Content="{DynamicResource Editor.GenerateTocButton}"
+                    ToolTip.Tip="{DynamicResource Editor.GenerateTocTooltip}" />
+        </StackPanel>
+
+        <ListBox ItemsSource="{Binding Chapters}"
+                 SelectedItem="{Binding SelectedChapter, Mode=TwoWay}">
+            <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="models:EditableChapterItem">
+                    <Grid ColumnDefinitions="*, Auto" ColumnSpacing="4">
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding Title}"
+                                       FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding FileName}"
+                                       FontSize="11"
+                                       Opacity="0.6"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                            <Button Content="↑" Padding="4,2" FontSize="11"
+                                    Command="{Binding $parent[ListBox].((vm:CreateEpubViewModel)DataContext).MoveChapterUpCommand}"
+                                    CommandParameter="{Binding}" ToolTip.Tip="{DynamicResource Editor.MoveChapterUpTooltip}"/>
+                            <Button Content="↓" Padding="4,2" FontSize="11"
+                                    Command="{Binding $parent[ListBox].((vm:CreateEpubViewModel)DataContext).MoveChapterDownCommand}"
+                                    CommandParameter="{Binding}" ToolTip.Tip="{DynamicResource Editor.MoveChapterDownTooltip}"/>
+                            <Button Content="×" Padding="4,2" FontSize="11"
+                                    Command="{Binding $parent[ListBox].((vm:CreateEpubViewModel)DataContext).DeleteChapterCommand}"
+                                    CommandParameter="{Binding}" ToolTip.Tip="{DynamicResource Editor.DeleteChapterTooltip}"/>
+                        </StackPanel>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</Border>
+
+    <!-- РАЗДЕЛИТЕЛЬ 1 (между списком глав и редактором) -->
+    <GridSplitter Grid.Column="1"
+                  ResizeDirection="Columns"
+                  Background="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+
+    <!-- 2. ЦЕНТРАЛЬНАЯ КОЛОНКА: Редактор главы или CSS -->
+    <TabControl Grid.Column="2" SelectedIndex="{Binding ActiveEditorTabIndex, Mode=TwoWay}">
+        <TabItem Header="{DynamicResource Editor.ChapterTabHeader}">
+            <Grid RowDefinitions="Auto, Auto, Auto, Auto, *">
+    <!-- Строка 0: Название главы и имя файла -->
+    <Grid Grid.Row="0" ColumnDefinitions="*, Auto" ColumnSpacing="8" Margin="8,8,8,4">
+        <TextBox Grid.Column="0"
+                 Text="{Binding SelectedChapter.Title, Mode=TwoWay}"
+                 PlaceholderText="{DynamicResource Editor.ChapterTitlePlaceholder}" />
+        <Border Grid.Column="1"
+                Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
+                CornerRadius="4"
+                Padding="8,4"
+                VerticalAlignment="Center">
+            <TextBlock Text="{Binding SelectedChapter.FileName}"
+                       FontFamily="Consolas, Monospace"
+                       FontSize="12"
+                       Opacity="0.8" />
+        </Border>
+    </Grid>
+
+    <!-- Строка 1: Кнопки форматирования текста -->
+    <WrapPanel Grid.Row="1" Margin="8,2" Orientation="Horizontal">
+        <Button Content="B" FontWeight="Bold" Click="OnFormatBoldClick" Margin="0,0,4,4" Padding="8,4" ToolTip.Tip="{DynamicResource Editor.FormatBoldTooltip}"/>
+        <Button Content="I" FontStyle="Italic" Click="OnFormatItalicClick" Margin="0,0,4,4" Padding="8,4" ToolTip.Tip="{DynamicResource Editor.FormatItalicTooltip}"/>
+        <Button Content="U" Click="OnFormatUnderlineClick" Margin="0,0,4,4" Padding="8,4" ToolTip.Tip="{DynamicResource Editor.FormatUnderlineTooltip}"/>
+        <Button Content="S" Click="OnFormatStrikeClick" Margin="0,0,4,4" Padding="8,4" ToolTip.Tip="{DynamicResource Editor.FormatStrikeTooltip}" />
+        <Button Content="Tx" Click="OnClearFormattingClick" Margin="0,0,8,4" Padding="8,4" ToolTip.Tip="{DynamicResource Editor.ClearFormatTooltip}" />
+
+        <Button Content="H1" Click="OnFormatH1Click" Margin="0,0,4,4" Padding="8,4" />
+        <Button Content="H2" Click="OnFormatH2Click" Margin="0,0,4,4" Padding="8,4" />
+        <Button Content="P" Click="OnFormatParagraphClick" Margin="0,0,8,4" Padding="8,4" />
+
+        <Button Content="{DynamicResource Editor.AlignCenterButton}" Click="OnAlignCenterClick" Margin="0,0,4,4" Padding="8,4" />
+        <Button Content="{DynamicResource Editor.AlignJustifyButton}" Click="OnAlignJustifyClick" Margin="0,0,8,4" Padding="8,4" />
+
+        <Button Content="{DynamicResource Editor.InsertBottomTextButton}" Click="OnInsertBottomTextClick" Margin="0,0,4,4" Padding="8,4"
+                ToolTip.Tip="{DynamicResource Editor.InsertBottomTextTooltip}" />
+        <Button Content="{DynamicResource Editor.InsertPageBreakButton}" Click="OnInsertPageBreakClick" Margin="0,0,4,4" Padding="8,4" />
+        <Button Content="{DynamicResource Editor.InsertImageButton}" Click="OnInsertImageClick" Margin="0,0,4,4" Padding="8,4" />
+        <Button Content="{DynamicResource Editor.BeautifyHtmlButton}" Click="OnFormatHtmlClick" Margin="0,0,4,4" Padding="8,4"
+        ToolTip.Tip="{DynamicResource Editor.BeautifyHtmlTooltip}" />
+    </WrapPanel>
+
+    <!-- Строка 2: Инструмент вставки ссылки в оглавление / текст -->
+    <Grid Grid.Row="2" ColumnDefinitions="Auto, *, Auto" ColumnSpacing="6" Margin="8,2,8,4">
+        <TextBlock Grid.Column="0" Text="{DynamicResource Editor.LinkTargetLabel}" VerticalAlignment="Center" FontSize="12" Opacity="0.8" />
+        <ComboBox Grid.Column="1"
+                  ItemsSource="{Binding Chapters}"
+                  SelectedItem="{Binding TargetChapterForLink, Mode=TwoWay}"
+                  HorizontalAlignment="Stretch"
+                  PlaceholderText="{DynamicResource Editor.SelectChapterPlaceholder}">
+            <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="models:EditableChapterItem">
+                    <TextBlock Text="{Binding Title}" />
+                </DataTemplate>
+            </ComboBox.ItemTemplate>
+        </ComboBox>
+        <Button Grid.Column="2"
+                Content="{DynamicResource Editor.InsertLinkButton}"
+                Click="OnInsertChapterLinkClick"
+                Padding="10,4" />
+    </Grid>
+                <!-- Строка 3: Быстрый поиск по коду главы -->
+<Grid Grid.Row="3" ColumnDefinitions="*, Auto, Auto, Auto" ColumnSpacing="4" Margin="8,2,8,4">
+    <TextBox Grid.Column="0"
+             x:Name="ChapterSearchBox"
+             PlaceholderText="{DynamicResource Editor.SearchChapterPlaceholder}"
+             TextChanged="OnChapterSearchTextChanged"
+             KeyDown="OnChapterSearchKeyDown" />
+    <TextBlock Grid.Column="1"
+               x:Name="SearchCounterText"
+               VerticalAlignment="Center"
+               FontSize="12"
+               Opacity="0.7"
+               Margin="4,0" />
+    <Button Grid.Column="2"
+            Content="↑"
+            Padding="8,4"
+            Click="OnFindPreviousClick"
+            ToolTip.Tip="{DynamicResource Editor.FindPreviousTooltip}" />
+    <Button Grid.Column="3"
+            Content="↓"
+            Padding="8,4"
+            Click="OnFindNextClick"
+            ToolTip.Tip="{DynamicResource Editor.FindNextTooltip}" />
+</Grid>
+
+    <!-- Строка 4: Текстовый редактор HTML -->
+    <TextBox Grid.Row="4"
+             x:Name="ChapterEditorBox"
+             Text="{Binding ChapterHtmlContent, Mode=TwoWay}"
+             AcceptsReturn="True"
+             TextWrapping="Wrap"
+             FontFamily="Consolas, Monospace"
+             Margin="8,4,8,8" />
+</Grid>
+        </TabItem>
+
+        <TabItem Header="{DynamicResource Editor.CssTabHeader}">
+            <Grid RowDefinitions="Auto, *">
+                <WrapPanel Grid.Row="0" Margin="8,8,8,4" Orientation="Horizontal">
+                    <Button Content="+ .fullpage-image" Click="OnInsertFullpageCssClick" Margin="0,0,4,4" Padding="8,4" />
+                    <Button Content="+ .inline-image" Click="OnInsertInlineImageCssClick" Margin="0,0,4,4" Padding="8,4" />
+                    <Button Content="+ .scene-divider" Click="OnInsertDividerCssClick" Margin="0,0,4,4" Padding="8,4" />
+                    <Button Content="+ .blockquote" Click="OnInsertBlockquoteCssClick" Margin="0,0,4,4" Padding="8,4" />
+                    <Button Content="+ .drop-cap" Click="OnInsertDropCapCssClick" Margin="0,0,4,4" Padding="8,4" />
+                    <Button Content="{DynamicResource Editor.AddDefaultStylesButton}"
+                       Click="OnAddDefaultStylesClick"
+                        Margin="0,0,4,4"
+                        Padding="8,4"
+                        ToolTip.Tip="{DynamicResource Editor.AddDefaultStylesTooltip}" />
+                </WrapPanel>
+
+            <TextBox Grid.Row="1"
+                 x:Name="CssEditorBox"
+                 Text="{Binding CustomCssContent, Mode=TwoWay}"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 FontFamily="Consolas, Monospace"
+                 Margin="8,4,8,8" />
+            </Grid>
+        </TabItem>
+    </TabControl>
+
+    <!-- РАЗДЕЛИТЕЛЬ 2 (между редактором и живым превью) -->
+    <GridSplitter Grid.Column="3"
+                  ResizeDirection="Columns"
+                  Background="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+
+    <!-- 3. ПРАВАЯ КОЛОНКА: Живое превью -->
+    <Grid Grid.Column="4" RowDefinitions="Auto, *">
+    <Border Grid.Row="0"
+            Padding="8,6"
+            Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+        <Grid ColumnDefinitions="*, Auto">
+            <ToggleSwitch Grid.Column="0"
+                          IsChecked="{Binding IsSingleChapterPreview, Mode=TwoWay}"
+                          OnContent="{DynamicResource Editor.PreviewSingleChapter}"
+                          OffContent="{DynamicResource Editor.PreviewFullBook}" />
+            <Button Grid.Column="1"
+                    Click="OnScrollToSelectedChapterClick"
+                    IsVisible="{Binding !IsSingleChapterPreview}"
+                    Padding="8,4"
+                    Content="{DynamicResource Editor.ScrollToChapterButton}"
+                    ToolTip.Tip="{DynamicResource Editor.ScrollToChapterTooltip}" />
+        </Grid>
+    </Border>
+
+    <NativeWebView Grid.Row="1"
+                      x:Name="PreviewWebView"
+                      Source="{Binding PreviewUri}" />
+</Grid>
+</Grid>
+    </Grid>
+</ContentPage>

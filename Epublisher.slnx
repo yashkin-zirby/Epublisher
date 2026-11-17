@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="Epublisher/Epublisher.Android/Epublisher.Android.csproj">
+    <Deploy />
+  </Project>
+  <Project Path="Epublisher/Epublisher.Desktop/Epublisher.Desktop.csproj" />
+  <Project Path="Epublisher/Epublisher/Epublisher.csproj" />
+  <Project Path="Epublisher/Theme/DarkTheme/DarkTheme.csproj" />
+</Solution>

@@ -1,0 +1,75 @@
+<ContentPage xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:Epublisher.ViewModels"
+             x:DataType="vm:ReaderViewModel"
+             x:Class="Epublisher.Views.ReaderView"
+             Header="{Binding BookTitle}">
+  <Grid RowDefinitions="Auto, *, Auto">
+        <Border Grid.Row="0"
+                Padding="12,8"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+            <Grid ColumnDefinitions="Auto, *, Auto, Auto" ColumnSpacing="10">
+                <Button Grid.Column="0"
+                        Click="OnScrollToTopClick"
+                        Padding="10,6"
+                        ToolTip.Tip="{DynamicResource Reader.ToTop}">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <PathIcon Data="M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z" Width="14" Height="14" />
+                        <TextBlock Text="{DynamicResource Reader.Contents}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <TextBlock Grid.Column="1"
+                           Text="{Binding BookTitle}"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4">
+                    <Button Content="A-" Click="OnDecreaseFontClick" Padding="8,6" />
+                    <Button Content="A+" Click="OnIncreaseFontClick" Padding="8,6" />
+                </StackPanel>
+
+                <Button Grid.Column="3"
+                        Command="{Binding EditCurrentBookCommand}"
+                        Padding="10,6"
+                        ToolTip.Tip="{DynamicResource Home.Edit}">
+                    <PathIcon Data="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z"
+                              Width="15" Height="15" />
+                </Button>
+            </Grid>
+        </Border>
+
+        <Panel Grid.Row="1">
+            <NativeWebView x:Name="EpubWebView"
+                           Source="{Binding ReaderSourceUri}" />
+            <Border IsVisible="{Binding IsLoading}"
+                    Background="{DynamicResource SystemControlBackgroundAltHighBrush}">
+                <ProgressBar IsIndeterminate="True"
+                             Width="200"
+                             HorizontalAlignment="Center"
+                             VerticalAlignment="Center" />
+            </Border>
+        </Panel>
+
+        <Border Grid.Row="2"
+                Padding="12,6"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+            <Grid ColumnDefinitions="*, Auto" ColumnSpacing="12">
+                <ProgressBar Grid.Column="0"
+                             Minimum="0" Maximum="1"
+                             Value="{Binding ReadingProgress}"
+                             Height="4"
+                             VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1"
+                           Text="{Binding ProgressPercentageText}"
+                           FontSize="12"
+                           Opacity="0.8"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+    </Grid>
+</ContentPage>

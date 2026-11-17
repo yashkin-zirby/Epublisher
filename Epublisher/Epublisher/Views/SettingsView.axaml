@@ -1,0 +1,62 @@
+﻿<ContentPage xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:Epublisher.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+             Header="Settings"
+             x:DataType="vm:SettingsViewModel"
+             x:Class="Epublisher.Views.SettingsView">
+    <Design.DataContext>
+        <vm:HomeViewModel />
+    </Design.DataContext>
+    <ScrollViewer>
+        <StackPanel Margin="20" Spacing="15">
+            <TextBlock Text="{DynamicResource Settings.Title}" FontSize="20" FontWeight="Bold"/>
+            
+            <TextBlock Text="{DynamicResource Settings.Language}"/>
+            <ComboBox ItemsSource="{Binding LanguagesList}"
+                      SelectedItem="{Binding SelectedLanguage, Mode=TwoWay}"
+                      DisplayMemberBinding="{Binding Value}"
+                      HorizontalAlignment="Stretch"/>
+
+            <TextBlock Text="{DynamicResource Settings.Theme}"/>
+            <ComboBox ItemsSource="{Binding ThemesList}"
+                      SelectedItem="{Binding SelectedTheme, Mode=TwoWay}"
+                      DisplayMemberBinding="{Binding Value}"
+                      HorizontalAlignment="Stretch"/>
+
+            <Expander Header="{DynamicResource Settings.Logging}"
+                      HorizontalAlignment="Stretch"
+                      IsExpanded="False">
+                <StackPanel Spacing="10" Margin="5">
+                    
+                    <CheckBox Content="{DynamicResource Settings.Logging.AllowLog}"
+                              IsChecked="{Binding AllowLog, Mode=TwoWay}" />
+
+                    <StackPanel Spacing="8" Margin="20,0,0,0" IsEnabled="{Binding AllowLog}">
+                        <CheckBox Content="{DynamicResource Settings.Logging.AllowDebug}"
+                                  IsChecked="{Binding AllowLogDebug, Mode=TwoWay}" />
+                        
+                        <CheckBox Content="{DynamicResource Settings.Logging.AllowWarning}"
+                                  IsChecked="{Binding AllowLogWarning, Mode=TwoWay}" />
+                        
+                        <CheckBox Content="{DynamicResource Settings.Logging.AllowError}"
+                                  IsChecked="{Binding AllowLogError, Mode=TwoWay}" />
+                    </StackPanel>
+
+                    <Separator Margin="0,5" />
+
+                    <CheckBox Content="{DynamicResource Settings.Logging.AllowMessageBox}"
+                              IsChecked="{Binding AllowMessageBox, Mode=TwoWay}" />
+
+                    <CheckBox Content="{DynamicResource Settings.Logging.AllowMessageBoxOnlyErrors}"
+                              IsChecked="{Binding AllowMessageBoxOnlyErrors, Mode=TwoWay}"
+                              IsEnabled="{Binding AllowMessageBox}"
+                              Margin="20,0,0,0" />
+                </StackPanel>
+            </Expander>
+
+        </StackPanel>
+    </ScrollViewer>
+</ContentPage>
