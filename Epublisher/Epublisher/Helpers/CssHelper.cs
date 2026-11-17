@@ -3,6 +3,7 @@ using Avalonia.Styling;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Epublisher.Helpers
 {
@@ -14,6 +15,10 @@ namespace Epublisher.Helpers
                 ? $"#{c.R:X2}{c.G:X2}{c.B:X2}"
                 : $"#{c.R:X2}{c.G:X2}{c.B:X2}{c.A:X2}";
         }
+        public const string BaseBodyCss = "body { font-family: serif; line-height: 1.6; margin: 1em; }";
+        public const string BaseHeadingsCss = "h1, h2, h3 { text-align: center; margin-top: 0.5em; margin-bottom: 0.4em; }";
+        public const string BaseParagraphCss = "p { text-indent: 1.5em; margin: 0.4em 0; text-align: justify; }";
+        public const string BaseImageCss = "img { max-width: 100%; height: auto; display: block; margin: 1em auto; }";
         public const string FullpageImageCss = """
     .fullpage-image {
         width: 100%;
@@ -135,32 +140,54 @@ namespace Epublisher.Helpers
         }
         public static string EnsureDefaultEditorStylesExist(string? css)
         {
-            var sb = new StringBuilder(css ?? string.Empty);
-            var defaultStyles = """
-            body { font-family: serif; line-height: 1.6; margin: 1em; }
-            h1, h2, h3 { text-align: center; margin-top: 0.5em; margin-bottom: 0.4em; }
-            p { text-indent: 1.5em; margin: 0.4em 0; text-align: justify; }
-            img { max-width: 100%; height: auto; display: block; margin: 1em auto; }
-            """;
-            if (!sb.ToString().Contains(".pdf-image", StringComparison.OrdinalIgnoreCase))
+            string existing = css ?? string.Empty;
+            var topRulesSb = new StringBuilder();
+            var bottomRulesSb = new StringBuilder(existing);
+
+            // Базовые правила для тегов добавляем в начало CSS (если их ещё нет)
+            if (!Regex.IsMatch(existing, @"(?:^|[\s\}])body\s*\{", RegexOptions.IgnoreCase))
+                topRulesSb.AppendLine(BaseBodyCss);
+
+            if (!Regex.IsMatch(existing, @"(?:^|[\s\}])h1\b[^{]*\{", RegexOptions.IgnoreCase))
+                topRulesSb.AppendLine(BaseHeadingsCss);
+
+            if (!Regex.IsMatch(existing, @"(?:^|[\s\}])p\s*\{", RegexOptions.IgnoreCase))
+                topRulesSb.AppendLine(BaseParagraphCss);
+
+            if (!Regex.IsMatch(existing, @"(?:^|[\s\}])img\s*\{", RegexOptions.IgnoreCase))
+                topRulesSb.AppendLine(BaseImageCss);
+
+            // Классы редактора добавляем в конец CSS (если их ещё нет)
+            if (!existing.Contains(".pdf-image", StringComparison.OrdinalIgnoreCase))
             {
-                sb.AppendLine();
-                sb.AppendLine(InlineImageCss);
+                bottomRulesSb.AppendLine();
+                bottomRulesSb.AppendLine(InlineImageCss);
             }
 
-            if (!sb.ToString().Contains(".fullpage-image", StringComparison.OrdinalIgnoreCase))
+            if (!existing.Contains(".fullpage-image", StringComparison.OrdinalIgnoreCase))
             {
-                sb.AppendLine();
-                sb.AppendLine(FullpageImageCss);
+                bottomRulesSb.AppendLine();
+                bottomRulesSb.AppendLine(FullpageImageCss);
             }
 
-            if (!sb.ToString().Contains(".epub-page-break", StringComparison.OrdinalIgnoreCase))
+            if (!existing.Contains(".epub-page-break", StringComparison.OrdinalIgnoreCase))
             {
-                sb.AppendLine();
-                sb.AppendLine(PageBreakCss);
+                bottomRulesSb.AppendLine();
+                bottomRulesSb.AppendLine(PageBreakCss);
             }
 
-            return sb.ToString().Trim();
+            if (!existing.Contains(".page-container", StringComparison.OrdinalIgnoreCase) ||
+                !existing.Contains(".bottom-text", StringComparison.OrdinalIgnoreCase))
+            {
+                bottomRulesSb.AppendLine();
+                bottomRulesSb.AppendLine(BottomTextCss);
+            }
+
+            string combined = topRulesSb.Length > 0
+                ? $"{topRulesSb.ToString().Trim()}\n\n{bottomRulesSb.ToString().Trim()}"
+                : bottomRulesSb.ToString().Trim();
+
+            return combined.Trim();
         }
     }
 }

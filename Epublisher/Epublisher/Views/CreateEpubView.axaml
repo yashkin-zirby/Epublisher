@@ -81,7 +81,7 @@
                             <TextBlock Text="{Binding Title}"
                                        FontWeight="SemiBold"
                                        TextTrimming="CharacterEllipsis" />
-                            <TextBlock Text="{Binding FileName}"
+                            <TextBlock Text="{Binding FullFileName}"
                                        FontSize="11"
                                        Opacity="0.6"
                                        TextTrimming="CharacterEllipsis" />
@@ -120,15 +120,31 @@
                  Text="{Binding SelectedChapter.Title, Mode=TwoWay}"
                  PlaceholderText="{DynamicResource Editor.ChapterTitlePlaceholder}" />
         <Border Grid.Column="1"
-                Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
-                CornerRadius="4"
-                Padding="8,4"
-                VerticalAlignment="Center">
-            <TextBlock Text="{Binding SelectedChapter.FileName}"
-                       FontFamily="Consolas, Monospace"
-                       FontSize="12"
-                       Opacity="0.8" />
-        </Border>
+        BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+        BorderThickness="1"
+        CornerRadius="4"
+        Padding="0"
+        VerticalAlignment="Center">
+    <Grid ColumnDefinitions="*, Auto">
+        <TextBox Grid.Column="0"
+                 x:Name="ChapterFileNameBox"
+                 Text="{Binding SelectedChapter.FileName, Mode=OneWay}"
+                 LostFocus="OnChapterFileNameLostFocus"
+                 KeyDown="OnChapterFileNameKeyDown"
+                 BorderThickness="0"
+                 Background="Transparent"
+                 FontFamily="Consolas, Monospace"
+                 FontSize="12"
+                 MinWidth="95" />
+        <TextBlock Grid.Column="1"
+                   Text=".xhtml"
+                   VerticalAlignment="Center"
+                   FontFamily="Consolas, Monospace"
+                   FontSize="12"
+                   Opacity="0.6"
+                   Margin="0,0,8,0" />
+    </Grid>
+</Border>
     </Grid>
 
     <!-- Строка 1: Кнопки форматирования текста -->
@@ -233,6 +249,43 @@
                  Margin="8,4,8,8" />
             </Grid>
         </TabItem>
+        <TabItem Header="{DynamicResource Editor.ResourcesTabHeader}">
+    <DockPanel Margin="8">
+        <Button DockPanel.Dock="Top"
+                Command="{Binding DeleteUnusedResourcesCommand}"
+                Content="{DynamicResource Editor.DeleteUnusedButton}"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Center"
+                Margin="0,0,0,8"
+                Padding="8,6" />
+
+        <ListBox ItemsSource="{Binding ImageResources}">
+            <ListBox.ItemTemplate>
+                <DataTemplate x:DataType="models:BookResourceItem">
+                    <Grid ColumnDefinitions="*, Auto, Auto" ColumnSpacing="8">
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding FileName, Mode=OneWay}"
+                                 LostFocus="OnImageResourceNameLostFocus"
+                                 KeyDown="OnImageResourceNameKeyDown"
+                                 FontFamily="Consolas, Monospace"
+                                 FontSize="12" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding SizeDisplay}"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   Opacity="0.7" />
+                        <TextBlock Grid.Column="2"
+                                   Text="{DynamicResource Editor.UnusedBadge}"
+                                   IsVisible="{Binding !IsUsed}"
+                                   Foreground="#EF4444"
+                                   FontSize="11"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</TabItem>
     </TabControl>
 
     <!-- РАЗДЕЛИТЕЛЬ 2 (между редактором и живым превью) -->

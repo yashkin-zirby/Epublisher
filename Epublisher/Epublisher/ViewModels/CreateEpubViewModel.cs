@@ -48,6 +48,8 @@ namespace Epublisher.ViewModels
         // 0 = Редактор главы, 1 = Редактор CSS стилей
         [ObservableProperty]
         private int _activeEditorTabIndex;
+        [ObservableProperty] 
+        private ObservableCollection<BookResourceItem> _imageResources = new();
 
         [ObservableProperty]
         private Uri? _previewUri;
@@ -230,6 +232,7 @@ namespace Epublisher.ViewModels
                         Id = id!,
                         RelativeHref = relHref,
                         FullFilePath = fullPath,
+                        FileName = Path.GetFileNameWithoutExtension(relHref),
                         Title = WebUtility.HtmlDecode(extractedTitle).Trim(),
                         BodyHtml = EpubTextFormatingHelper.FormatHtml(bodyMatch.Trim())
                     });
@@ -251,8 +254,8 @@ namespace Epublisher.ViewModels
 
                 Book.LastMode = LastWorkMode.Editing;
                 await App.Services.RecentFiles.AddOrUpdateAsync(Book);
-
                 await SaveAndRebuildPreviewAsync();
+                RefreshImageResources();
             }
             catch (Exception ex)
             {
@@ -300,7 +303,7 @@ namespace Epublisher.ViewModels
             foreach (var ch in Chapters)
             {
                 if (ch.Id == "toc_page") continue;
-                string targetFile = string.IsNullOrEmpty(ch.FileName) ? $"{ch.Id}.xhtml" : ch.FileName;
+                string targetFile = !string.IsNullOrEmpty(ch.FullFileName) ? ch.FullFileName : $"{ch.Id}.xhtml";
                 string safeTitle = WebUtility.HtmlEncode(ch.Title);
                 sb.AppendLine($"    <li><a href=\"{targetFile}\">{safeTitle}</a></li>");
             }
@@ -321,6 +324,7 @@ namespace Epublisher.ViewModels
                 {
                     Id = "toc_page",
                     RelativeHref = "Text/toc_page.xhtml",
+                    FileName = "toc_page",
                     Title = "Оглавление",
                     BodyHtml = sb.ToString()
                 };
@@ -347,17 +351,14 @@ namespace Epublisher.ViewModels
                     ?? throw new FileNotFoundException("Файл .opf не найден.");
                 string opfDir = Path.GetDirectoryName(opfPath)!;
 
-                // 1. Сохраняем CSS
                 string? cssFile = Directory.GetFiles(opfDir, "*.css", SearchOption.AllDirectories).FirstOrDefault();
                 if (!string.IsNullOrEmpty(cssFile) && !string.IsNullOrEmpty(CustomCssContent))
                 {
                     await WriteTextWithRetryAsync(cssFile, CustomCssContent);
                 }
 
-                // 2. Сохраняем главы и обновляем content.opf
                 await PersistBookStructureAsync(opfDir);
 
-                // 3. Пересобираем превью
                 string previewPath;
                 if (IsSingleChapterPreview && SelectedChapter != null && File.Exists(SelectedChapter.FullFilePath))
                 {
@@ -410,7 +411,7 @@ namespace Epublisher.ViewModels
             if (string.IsNullOrEmpty(cleanFileName)) return;
 
             var target = Chapters.FirstOrDefault(c =>
-                c.FileName.Equals(cleanFileName, StringComparison.OrdinalIgnoreCase));
+                c.FullFileName.Equals(cleanFileName, StringComparison.OrdinalIgnoreCase));
 
             if (target != null)
             {
@@ -509,7 +510,8 @@ namespace Epublisher.ViewModels
             var newChapter = new EditableChapterItem
             {
                 Id = $"ch_{uniqueId}",
-                RelativeHref = $"Text/ch_{DateTime.UtcNow.Ticks}.xhtml",
+                RelativeHref = $"Text/ch_{uniqueId}.xhtml",
+                FileName = $"ch_{uniqueId}",
                 Title = $"Глава {nextNum}",
                 BodyHtml = $"<h2>Глава {nextNum}</h2>\n<p>Текст новой главы...</p>"
             };
@@ -518,7 +520,264 @@ namespace Epublisher.ViewModels
             SelectedChapter = newChapter;
             ScheduleRebuildPreview();
         }
+        [RelayCommand]
+        private async Task RenameSelectedChapterFileAsync(string? requestedNewName)
+        {
+            if (SelectedChapter == null || string.IsNullOrWhiteSpace(requestedNewName))
+                return;
 
+            string newNameWithoutExt = Path.GetFileNameWithoutExtension(requestedNewName.Trim());
+            if (string.IsNullOrWhiteSpace(newNameWithoutExt))
+                return;
+
+            string oldFullName = Path.GetFileName(SelectedChapter.FullFilePath);
+            string oldNameWithoutExt = Path.GetFileNameWithoutExtension(oldFullName);
+            string oldExt = Path.GetExtension(oldFullName);
+            if (string.IsNullOrEmpty(oldExt)) oldExt = ".xhtml";
+
+            if (string.Equals(oldNameWithoutExt, newNameWithoutExt, StringComparison.OrdinalIgnoreCase))
+            {
+                SelectedChapter.FileName = oldNameWithoutExt;
+                return;
+            }
+
+            string newFullName = $"{newNameWithoutExt}{oldExt}";
+            string dir = Path.GetDirectoryName(SelectedChapter.FullFilePath)!;
+            string newFullPath = Path.Combine(dir, newFullName);
+
+            if (File.Exists(newFullPath))
+            {
+                SelectedChapter.FileName = oldNameWithoutExt;
+                return;
+            }
+
+            await _saveLock.WaitAsync();
+            try
+            {
+                if (File.Exists(SelectedChapter.FullFilePath))
+                {
+                    File.Move(SelectedChapter.FullFilePath, newFullPath);
+                }
+
+                string relDir = Path.GetDirectoryName(SelectedChapter.RelativeHref)?.Replace('\\', '/') ?? "Text";
+                SelectedChapter.FullFilePath = newFullPath;
+                SelectedChapter.RelativeHref = string.IsNullOrEmpty(relDir) ? newFullName : $"{relDir}/{newFullName}";
+                SelectedChapter.FileName = newNameWithoutExt;
+
+                foreach (var ch in Chapters)
+                {
+                    if (ch == SelectedChapter)
+                    {
+                        ChapterHtmlContent = ChapterHtmlContent.Replace(oldFullName, newFullName, StringComparison.OrdinalIgnoreCase);
+                        ch.BodyHtml = ChapterHtmlContent;
+                    }
+                    else if (ch.BodyHtml.Contains(oldFullName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ch.BodyHtml = ch.BodyHtml.Replace(oldFullName, newFullName, StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+            finally
+            {
+                _saveLock.Release();
+            }
+
+            await SaveAndRebuildPreviewAsync();
+        }
+        public void RefreshImageResources()
+        {
+            try
+            {
+                string opfPath = Directory.GetFiles(Book.InternalEpubPath, "*.opf", SearchOption.AllDirectories).FirstOrDefault() ?? string.Empty;
+                if (string.IsNullOrEmpty(opfPath)) return;
+
+                string opfDir = Path.GetDirectoryName(opfPath)!;
+                XDocument opfDoc = XDocument.Load(opfPath);
+                XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
+
+                // Собираем весь HTML всех глав + CSS для проверки, используется ли файл
+                string allChaptersHtml = string.Join("\n", Chapters.Select(c => c.BodyHtml)) + "\n" + CustomCssContent;
+
+                // Проверяем также id обложки в метаданных
+                string? coverId = opfDoc.Descendants(opfNs + "meta")
+                    .FirstOrDefault(m => m.Attribute("name")?.Value == "cover")
+                    ?.Attribute("content")?.Value;
+
+                var list = new ObservableCollection<BookResourceItem>();
+
+                foreach (var item in opfDoc.Descendants(opfNs + "item"))
+                {
+                    string mediaType = item.Attribute("media-type")?.Value ?? string.Empty;
+                    if (!mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    string id = item.Attribute("id")?.Value ?? string.Empty;
+                    string href = Uri.UnescapeDataString(item.Attribute("href")?.Value ?? string.Empty);
+                    string fullPath = Path.Combine(opfDir, href.Replace('/', Path.DirectorySeparatorChar));
+                    string fileName = Path.GetFileName(href);
+
+                    bool isCover = id == coverId || (item.Attribute("properties")?.Value?.Contains("cover-image") == true);
+                    bool isReferenced = isCover || allChaptersHtml.Contains(fileName, StringComparison.OrdinalIgnoreCase);
+
+                    long sizeBytes = File.Exists(fullPath) ? new FileInfo(fullPath).Length : 0;
+                    string sizeStr = sizeBytes >= 1024 * 1024
+                        ? $"{sizeBytes / (1024.0 * 1024.0):F1} MB"
+                        : $"{Math.Max(1, sizeBytes / 1024)} KB";
+
+                    list.Add(new BookResourceItem
+                    {
+                        ManifestId = id,
+                        RelativeHref = href,
+                        FullFilePath = fullPath,
+                        FileName = Path.GetFileNameWithoutExtension(href),
+                        IsUsed = isReferenced,
+                        SizeDisplay = sizeStr
+                    });
+                }
+
+                ImageResources = list;
+            }
+            catch (Exception ex)
+            {
+                ExceptionProcesser.Process(ex);
+            }
+        }
+
+        public async Task RenameImageResourceAsync(BookResourceItem resource, string newFileName)
+        {
+            if (string.IsNullOrWhiteSpace(newFileName)) return;
+
+            string newNameWithoutExt = Path.GetFileNameWithoutExtension(newFileName.Trim());
+            if (string.IsNullOrWhiteSpace(newNameWithoutExt)) return;
+
+            string oldNameWithoutExt = resource.FileName;
+            string ext = !string.IsNullOrEmpty(resource.Extension)
+                ? resource.Extension
+                : Path.GetExtension(resource.FullFilePath);
+
+            if (string.Equals(oldNameWithoutExt, newNameWithoutExt, StringComparison.OrdinalIgnoreCase))
+            {
+                resource.FileName = oldNameWithoutExt;
+                return;
+            }
+
+            string oldFullName = $"{oldNameWithoutExt}{ext}";
+            string newFullName = $"{newNameWithoutExt}{ext}";
+
+            string dir = Path.GetDirectoryName(resource.FullFilePath)!;
+            string newFullPath = Path.Combine(dir, newFullName);
+            if (File.Exists(newFullPath))
+            {
+                resource.FileName = oldNameWithoutExt;
+                return;
+            }
+
+            await _saveLock.WaitAsync();
+            try
+            {
+                if (File.Exists(resource.FullFilePath))
+                {
+                    File.Move(resource.FullFilePath, newFullPath);
+                }
+
+                string relDir = Path.GetDirectoryName(resource.RelativeHref)?.Replace('\\', '/') ?? "Images";
+                string newRelHref = string.IsNullOrEmpty(relDir) ? newFullName : $"{relDir}/{newFullName}";
+
+                string opfPath = Directory.GetFiles(Book.InternalEpubPath, "*.opf", SearchOption.AllDirectories).First();
+                XDocument opfDoc = XDocument.Load(opfPath);
+                XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
+
+                var manifestItem = opfDoc.Descendants(opfNs + "item")
+                    .FirstOrDefault(x => x.Attribute("id")?.Value == resource.ManifestId);
+                if (manifestItem != null)
+                {
+                    manifestItem.SetAttributeValue("href", newRelHref);
+                    opfDoc.Save(opfPath);
+                }
+
+                foreach (var ch in Chapters)
+                {
+                    if (ch == SelectedChapter)
+                    {
+                        ChapterHtmlContent = ChapterHtmlContent.Replace(oldFullName, newFullName, StringComparison.OrdinalIgnoreCase);
+                        ch.BodyHtml = ChapterHtmlContent;
+                    }
+                    else if (ch.BodyHtml.Contains(oldFullName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        ch.BodyHtml = ch.BodyHtml.Replace(oldFullName, newFullName, StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+
+                if (CustomCssContent.Contains(oldFullName, StringComparison.OrdinalIgnoreCase))
+                {
+                    CustomCssContent = CustomCssContent.Replace(oldFullName, newFullName, StringComparison.OrdinalIgnoreCase);
+                }
+
+                resource.FullFilePath = newFullPath;
+                resource.RelativeHref = newRelHref;
+                resource.FileName = newNameWithoutExt;
+            }
+            finally
+            {
+                _saveLock.Release();
+            }
+
+            await SaveAndRebuildPreviewAsync();
+            RefreshImageResources();
+        }
+
+        [RelayCommand]
+        private async Task DeleteUnusedResourcesAsync()
+        {
+            RefreshImageResources();
+
+            await _saveLock.WaitAsync();
+            try
+            {
+                string opfPath = Directory.GetFiles(Book.InternalEpubPath, "*.opf", SearchOption.AllDirectories).First();
+                string opfDir = Path.GetDirectoryName(opfPath)!;
+                XDocument opfDoc = XDocument.Load(opfPath);
+                XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
+
+                var unusedImages = ImageResources.Where(r => !r.IsUsed).ToList();
+                foreach (var img in unusedImages)
+                {
+                    if (File.Exists(img.FullFilePath))
+                    {
+                        File.Delete(img.FullFilePath);
+                    }
+
+                    opfDoc.Descendants(opfNs + "item")
+                        .Where(x => x.Attribute("id")?.Value == img.ManifestId)
+                        .Remove();
+                }
+
+                string textDir = Path.Combine(opfDir, "Text");
+                if (Directory.Exists(textDir))
+                {
+                    var activePaths = Chapters
+                        .Select(c => Path.GetFullPath(c.FullFilePath))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (string file in Directory.GetFiles(textDir, "*.xhtml"))
+                    {
+                        if (!activePaths.Contains(Path.GetFullPath(file)))
+                        {
+                            File.Delete(file);
+                        }
+                    }
+                }
+
+                opfDoc.Save(opfPath);
+            }
+            finally
+            {
+                _saveLock.Release();
+            }
+
+            RefreshImageResources();
+            await SaveAndRebuildPreviewAsync();
+        }
         [RelayCommand]
         private void DeleteChapter(EditableChapterItem? chapter)
         {

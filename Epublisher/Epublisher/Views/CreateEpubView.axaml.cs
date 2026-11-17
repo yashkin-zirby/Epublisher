@@ -4,6 +4,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
+using Epublisher.DataEntities;
 using Epublisher.Helpers;
 using Epublisher.ViewModels;
 using System;
@@ -35,7 +36,7 @@ namespace Epublisher.Views
 
                 string uriStr = args.Request.ToString();
                 string targetFileName = Path.GetFileName(uriStr.Split('#').First());
-                string currentFileName = _vm.SelectedChapter?.FileName ?? string.Empty;
+                string currentFileName = _vm.SelectedChapter?.FullFileName ?? string.Empty;
                 if (!string.IsNullOrEmpty(targetFileName) &&
                     !targetFileName.Equals(currentFileName, StringComparison.OrdinalIgnoreCase) &&
                     (targetFileName.EndsWith(".xhtml", StringComparison.OrdinalIgnoreCase) ||
@@ -237,7 +238,7 @@ namespace Epublisher.Views
             if (_vm?.TargetChapterForLink == null) return;
 
             var target = _vm.TargetChapterForLink;
-            string href = string.IsNullOrEmpty(target.FileName) ? $"{target.Id}.xhtml" : target.FileName;
+            string href = string.IsNullOrEmpty(target.FullFileName) ? $"{target.Id}.xhtml" : target.FullFileName;
 
             ApplyFormat((text, selStart, selEnd) =>
             {
@@ -249,7 +250,7 @@ namespace Epublisher.Views
                     ? text.Substring(start, end - start)
                     : System.Net.WebUtility.HtmlEncode(target.Title);
 
-                string linkTag = $"<a href=\"{href}\">{linkLabel}</a>";
+                string linkTag = $"<a href=\"{href}\" epub:type=\"backlink\">{linkLabel}</a>";
                 string updated = text.Remove(start, end - start).Insert(start, linkTag);
                 int newPos = start + linkTag.Length;
 
@@ -263,8 +264,13 @@ namespace Epublisher.Views
                 if (_vm?.PreviewUri != null)
                 {
                     _isPreviewLoaded = false;
-                    PreviewWebView.Source = null;
-                    PreviewWebView.Source = _vm.PreviewUri;
+                    PreviewWebView.Source = new Uri("about:blank");
+                    var uriBuilder = new UriBuilder(_vm.PreviewUri)
+                    {
+                        Query = $"t={DateTime.UtcNow.Ticks}"
+                    };
+
+                    PreviewWebView.Source = uriBuilder.Uri;
                 }
             });
         }
@@ -333,6 +339,41 @@ namespace Epublisher.Views
             UpdateSearchMatches(focusEditor: false);
         }
 
+        private async void OnChapterFileNameLostFocus(object? sender, RoutedEventArgs e)
+        {
+            if (_vm != null && sender is TextBox tb && !string.IsNullOrWhiteSpace(tb.Text))
+            {
+                await _vm.RenameSelectedChapterFileCommand.ExecuteAsync(tb.Text);
+            }
+        }
+
+        private async void OnChapterFileNameKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
+        {
+            if (e.Key == Avalonia.Input.Key.Enter && _vm != null && sender is TextBox tb && !string.IsNullOrWhiteSpace(tb.Text))
+            {
+                await _vm.RenameSelectedChapterFileCommand.ExecuteAsync(tb.Text);
+                ChapterEditorBox.Focus();
+                e.Handled = true;
+            }
+        }
+
+        private async void OnImageResourceNameLostFocus(object? sender, RoutedEventArgs e)
+        {
+            if (_vm != null && sender is TextBox tb && tb.DataContext is BookResourceItem item && !string.IsNullOrWhiteSpace(tb.Text))
+            {
+                await _vm.RenameImageResourceAsync(item, tb.Text);
+            }
+        }
+
+        private async void OnImageResourceNameKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
+        {
+            if (e.Key == Avalonia.Input.Key.Enter && _vm != null && sender is TextBox tb && tb.DataContext is BookResourceItem item && !string.IsNullOrWhiteSpace(tb.Text))
+            {
+                await _vm.RenameImageResourceAsync(item, tb.Text);
+                e.Handled = true;
+            }
+        }
+
         private void OnChapterSearchKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
         {
             if (e.Key == Avalonia.Input.Key.Enter)
@@ -345,7 +386,6 @@ namespace Epublisher.Views
                 e.Handled = true;
             }
         }
-
         private void OnFindNextClick(object? sender, RoutedEventArgs e) => NavigateSearchMatch(1);
 
         private void OnFindPreviousClick(object? sender, RoutedEventArgs e) => NavigateSearchMatch(-1);
@@ -482,6 +522,7 @@ namespace Epublisher.Views
                 {
                     ApplyFormat((t, s, _) => EpubTextFormatingHelper.InsertImageTag(t, s, relPath, fullPage: false));
                 }
+                _vm.RefreshImageResources();
             }
             catch (Exception ex)
             {

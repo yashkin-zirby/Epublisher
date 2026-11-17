@@ -9,11 +9,15 @@ namespace Epublisher.DataEntities
     public partial class EditableChapterItem : ObservableObject
     {
         public string Id { get; set; } = string.Empty;
-        public string RelativeHref { get; set; } = string.Empty;
+        [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(FullFileName))]
+        private string _relativeHref = string.Empty;
         public string FullFilePath { get; set; } = string.Empty;
-        public string FileName => string.IsNullOrEmpty(RelativeHref)
-        ? string.Empty
-        : Path.GetFileName(RelativeHref);
+        [ObservableProperty]
+        private string _fileName = string.Empty;
+        public string FullFileName => !string.IsNullOrEmpty(RelativeHref)
+        ? Path.GetFileName(RelativeHref)
+        : $"{FileName}.xhtml";
 
         [ObservableProperty]
         private string _title = "Новая глава";

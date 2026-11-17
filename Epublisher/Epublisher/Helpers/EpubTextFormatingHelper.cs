@@ -90,25 +90,17 @@ namespace Epublisher.Helpers
 
             return new TextFormatResult(wrapped, Math.Max(0, selectStart), selectEnd);
         }
-
-        /// <summary>
-        /// Удаляет все HTML-теги форматирования ТОЛЬКО внутри выделенного диапазона текста.
-        /// Если текст не выделен — ничего не делает.
-        /// </summary>
         public static TextFormatResult ClearFormatting(string text, int selStart, int selEnd)
         {
             text ??= string.Empty;
             int start = Math.Clamp(Math.Min(selStart, selEnd), 0, text.Length);
             int end = Math.Clamp(Math.Max(selStart, selEnd), 0, text.Length);
 
-            // Если текст не выделен — ничего не меняем
             if (start == end)
                 return new TextFormatResult(text, start, end);
 
             string selected = text.Substring(start, end - start);
 
-            // Также проверяем, не находятся ли теги прямо снаружи выделенного текста
-            // (например, если пользователь выделил текст внутри <strong>выделение</strong>)
             int outerStart = start;
             int outerEnd = end;
 
