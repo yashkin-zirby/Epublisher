@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,7 +22,7 @@ namespace Epublisher.Views
         private CreateEpubViewModel? _vm;
         private bool _isPreviewLoaded;
         private int? _pendingScrollChapterIndex;
-        private readonly List<int> _searchMatchIndices = new();
+        private readonly List<(int Index, int Length)> _searchMatches = new();
         private int _currentMatchIndex = -1;
         private int _savedSelStart;
         private int _savedSelEnd;
@@ -374,9 +375,21 @@ namespace Epublisher.Views
             }
         }
 
+        private static Regex BuildFlexibleWhitespaceRegex(string query)
+        {
+            // Normalize CRLF to LF, escape regex characters, and allow any line breaks/indentation where whitespace appears
+            string normalized = query.Replace("\r\n", "\n");
+            var parts = Regex.Split(normalized, @"\s+")
+                .Select(Regex.Escape);
+            string pattern = string.Join(@"\s*", parts);
+            return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        }
+
         private void OnChapterSearchKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
         {
-            if (e.Key == Avalonia.Input.Key.Enter)
+            if (e.Key == Avalonia.Input.Key.Enter &&
+                (e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Control) ||
+                 e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Meta)))
             {
                 if (e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Shift))
                     NavigateSearchMatch(-1);
@@ -386,35 +399,45 @@ namespace Epublisher.Views
                 e.Handled = true;
             }
         }
-        private void OnFindNextClick(object? sender, RoutedEventArgs e) => NavigateSearchMatch(1);
 
-        private void OnFindPreviousClick(object? sender, RoutedEventArgs e) => NavigateSearchMatch(-1);
+        private void OnChapterReplaceKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
+        {
+            if (e.Key == Avalonia.Input.Key.Enter &&
+                (e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Control) ||
+                 e.KeyModifiers.HasFlag(Avalonia.Input.KeyModifiers.Meta)))
+            {
+                OnReplaceCurrentClick(sender, e);
+                e.Handled = true;
+            }
+        }
 
         private void UpdateSearchMatches(bool focusEditor)
         {
-            _searchMatchIndices.Clear();
+            _searchMatches.Clear();
             _currentMatchIndex = -1;
 
             string query = ChapterSearchBox.Text ?? string.Empty;
             string content = ChapterEditorBox.Text ?? string.Empty;
 
-            if (string.IsNullOrEmpty(query) || string.IsNullOrEmpty(content))
+            if (string.IsNullOrWhiteSpace(query) || string.IsNullOrEmpty(content))
             {
                 SearchCounterText.Text = string.Empty;
                 return;
             }
 
-            int index = 0;
-            while ((index = content.IndexOf(query, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            var regex = BuildFlexibleWhitespaceRegex(query);
+            foreach (Match m in regex.Matches(content))
             {
-                _searchMatchIndices.Add(index);
-                index += query.Length;
+                if (m.Length > 0)
+                {
+                    _searchMatches.Add((m.Index, m.Length));
+                }
             }
 
-            if (_searchMatchIndices.Count > 0)
+            if (_searchMatches.Count > 0)
             {
                 _currentMatchIndex = 0;
-                HighlightCurrentMatch(query.Length, focusEditor);
+                HighlightCurrentMatch(focusEditor);
             }
             else
             {
@@ -425,24 +448,24 @@ namespace Epublisher.Views
         private void NavigateSearchMatch(int step)
         {
             string query = ChapterSearchBox.Text ?? string.Empty;
-            if (string.IsNullOrEmpty(query)) return;
+            if (string.IsNullOrWhiteSpace(query)) return;
 
-            if (_searchMatchIndices.Count == 0)
+            if (_searchMatches.Count == 0)
             {
                 UpdateSearchMatches(focusEditor: true);
                 return;
             }
 
-            _currentMatchIndex = (_currentMatchIndex + step + _searchMatchIndices.Count) % _searchMatchIndices.Count;
-            HighlightCurrentMatch(query.Length, focusEditor: true);
+            _currentMatchIndex = (_currentMatchIndex + step + _searchMatches.Count) % _searchMatches.Count;
+            HighlightCurrentMatch(focusEditor: true);
         }
 
-        private void HighlightCurrentMatch(int length, bool focusEditor)
+        private void HighlightCurrentMatch(bool focusEditor)
         {
-            if (_currentMatchIndex < 0 || _currentMatchIndex >= _searchMatchIndices.Count) return;
+            if (_currentMatchIndex < 0 || _currentMatchIndex >= _searchMatches.Count) return;
 
-            int startPos = _searchMatchIndices.ElementAt(_currentMatchIndex);
-            SearchCounterText.Text = $"{_currentMatchIndex + 1}/{_searchMatchIndices.Count}";
+            var (startPos, length) = _searchMatches.ElementAt(_currentMatchIndex);
+            SearchCounterText.Text = $"{_currentMatchIndex + 1}/{_searchMatches.Count}";
 
             ChapterEditorBox.CaretIndex = startPos + length;
             ChapterEditorBox.SelectionStart = startPos;
@@ -453,6 +476,83 @@ namespace Epublisher.Views
                 ChapterEditorBox.Focus();
             }
         }
+
+        private void OnReplaceCurrentClick(object? sender, RoutedEventArgs e)
+        {
+            if (_vm == null) return;
+
+            string query = ChapterSearchBox.Text ?? string.Empty;
+            string replacement = ChapterReplaceBox.Text ?? string.Empty;
+            string content = _vm.ChapterHtmlContent ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(query) || string.IsNullOrEmpty(content))
+                return;
+
+            if (_currentMatchIndex < 0 || _currentMatchIndex >= _searchMatches.Count)
+            {
+                UpdateSearchMatches(focusEditor: false);
+                if (_currentMatchIndex < 0) return;
+            }
+
+            var (startPos, matchLen) = _searchMatches.ElementAt(_currentMatchIndex);
+            if (startPos + matchLen > content.Length)
+            {
+                UpdateSearchMatches(focusEditor: false);
+                return;
+            }
+
+            string updatedContent = content.Remove(startPos, matchLen).Insert(startPos, replacement);
+            _vm.ChapterHtmlContent = updatedContent;
+
+            int nextCursorPos = startPos + replacement.Length;
+
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                UpdateSearchMatches(focusEditor: false);
+
+                if (_searchMatches.Count > 0)
+                {
+                    int nextIdx = _searchMatches.FindIndex(m => m.Index >= nextCursorPos);
+                    _currentMatchIndex = nextIdx >= 0 ? nextIdx : 0;
+                    HighlightCurrentMatch(focusEditor: true);
+                }
+                else if (replacement.Length > 0 && startPos + replacement.Length <= (ChapterEditorBox.Text?.Length ?? 0))
+                {
+                    ChapterEditorBox.CaretIndex = startPos + replacement.Length;
+                    ChapterEditorBox.SelectionStart = startPos;
+                    ChapterEditorBox.SelectionEnd = startPos + replacement.Length;
+                    ChapterEditorBox.Focus();
+                }
+            });
+        }
+
+
+        private void OnReplaceAllClick(object? sender, RoutedEventArgs e)
+        {
+            if (_vm == null) return;
+
+            string query = ChapterSearchBox.Text ?? string.Empty;
+            string replacement = ChapterReplaceBox.Text ?? string.Empty;
+            string content = _vm.ChapterHtmlContent ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(query) || string.IsNullOrEmpty(content))
+                return;
+
+            var regex = BuildFlexibleWhitespaceRegex(query);
+            string updatedContent = regex.Replace(content, replacement);
+
+            if (!string.Equals(content, updatedContent, StringComparison.Ordinal))
+            {
+                _vm.ChapterHtmlContent = updatedContent;
+                UpdateSearchMatches(focusEditor: false);
+            }
+        }
+
+
+        
+        private void OnFindNextClick(object? sender, RoutedEventArgs e) => NavigateSearchMatch(1);
+
+        private void OnFindPreviousClick(object? sender, RoutedEventArgs e) => NavigateSearchMatch(-1);
 
         private void OnFormatBoldClick(object? sender, RoutedEventArgs e) =>
             ApplyFormat(EpubTextFormatingHelper.ApplyBold);
@@ -486,6 +586,70 @@ namespace Epublisher.Views
         private void OnClearFormattingClick(object? sender, RoutedEventArgs e) =>
             ApplyFormat(EpubTextFormatingHelper.ClearFormatting);
 
+        private async void OnAddFontClick(object? sender, RoutedEventArgs e)
+        {
+            if (_vm == null) return;
+
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel == null) return;
+
+            string dialogTitle = "Select font";
+            if (Application.Current?.TryFindResource("Editor.SelectFontDialogTitle", Application.Current.ActualThemeVariant, out object? res) == true
+                && res is string localizedTitle
+                && !string.IsNullOrWhiteSpace(localizedTitle))
+            {
+                dialogTitle = localizedTitle;
+            }
+
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = dialogTitle,
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                    new FilePickerFileType("Fonts")
+                    {
+                        Patterns = new[] { "*.ttf", "*.otf", "*.woff", "*.woff2" }
+                    }
+                }
+            });
+
+            if (files.Count == 0) return;
+
+            try
+            {
+                var fontFile = files.First();
+                await using Stream stream = await fontFile.OpenReadAsync();
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+
+                await _vm.SaveFontAssetToBookAsync(fontFile.Name, ms.ToArray());
+            }
+            catch (Exception ex)
+            {
+                ExceptionProcesser.Process(ex);
+            }
+        }
+        private void OnApplyCustomHtmlRuleClick(object? sender, RoutedEventArgs e)
+        {
+            if (_vm?.SelectedHtmlRule == null) return;
+
+            var rule = _vm.SelectedHtmlRule;
+
+            if (!string.IsNullOrWhiteSpace(rule.AssociatedCss))
+            {
+                _vm.CustomCssContent = CssHelper.EnsureCustomRuleCssExists(_vm.CustomCssContent, rule.AssociatedCss);
+            }
+
+            ApplyFormat((text, selStart, selEnd) =>
+                EpubTextFormatingHelper.ApplyCustomRule(text, selStart, selEnd, rule));
+        }
+
+        private void OnApplyCustomCssTemplateClick(object? sender, RoutedEventArgs e)
+        {
+            if (_vm?.SelectedCssTemplate == null) return;
+            InsertCssSnippet(_vm.SelectedCssTemplate.CssCode);
+        }
         private async void OnInsertImageClick(object? sender, RoutedEventArgs e)
         {
             if (_vm == null) return;
@@ -522,7 +686,7 @@ namespace Epublisher.Views
                 {
                     ApplyFormat((t, s, _) => EpubTextFormatingHelper.InsertImageTag(t, s, relPath, fullPage: false));
                 }
-                _vm.RefreshImageResources();
+                _vm.RefreshAllResources();
             }
             catch (Exception ex)
             {

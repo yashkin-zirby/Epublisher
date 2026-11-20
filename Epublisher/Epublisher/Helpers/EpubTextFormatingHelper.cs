@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Epublisher.DataEntities;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -185,7 +186,15 @@ namespace Epublisher.Helpers
 
             return new TextFormatResult(wrapped, wrappedStart, wrappedEnd);
         }
+        public static TextFormatResult ApplyCustomRule(string text, int selStart, int selEnd, CustomHtmlRule rule)
+        {
+            if (string.IsNullOrWhiteSpace(rule.CloseTag))
+            {
+                return InsertAtCursor(text, selStart, $"\n{rule.OpenTag}\n");
+            }
 
+            return ToggleWrapSelection(text, selStart, selEnd, rule.OpenTag, rule.CloseTag);
+        }
         private static TextFormatResult InsertAtCursor(string text, int cursorPos, string insertion)
         {
             text ??= string.Empty;

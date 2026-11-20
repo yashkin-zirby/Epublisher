@@ -1,14 +1,15 @@
-﻿using Avalonia;
-using Avalonia.Styling;
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using Epublisher.DataEntities;
 using Epublisher.Services;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace Epublisher.ViewModels;
 
-public class SettingsViewModel : ViewModelBase
+public partial class SettingsViewModel : ViewModelBase
 {
     private readonly ThemeManager _themeManager;
     private readonly LocalizationManager _locManager;
@@ -21,6 +22,16 @@ public class SettingsViewModel : ViewModelBase
     private bool _allowLog;
     private bool _allowMessageBox;
     private bool _allowMessageBoxOnlyErrors;
+    public ObservableCollection<CustomHtmlRule> HtmlRules { get; } = new(App.Services.CustomHtmlRules.Rules);
+    public ObservableCollection<CustomCssTemplate> CssTemplates { get; } = new(App.Services.CustomCssTemplates.Templates);
+
+    [ObservableProperty] private string _newHtmlRuleName = string.Empty;
+    [ObservableProperty] private string _newHtmlOpenTag = string.Empty;
+    [ObservableProperty] private string _newHtmlCloseTag = string.Empty;
+    [ObservableProperty] private string _newHtmlAssociatedCss = string.Empty;
+
+    [ObservableProperty] private string _newCssTemplateName = string.Empty;
+    [ObservableProperty] private string _newCssTemplateCode = string.Empty;
 
     public List<KeyValuePair<string, string>> LanguagesList { get; }
 
@@ -165,10 +176,6 @@ public class SettingsViewModel : ViewModelBase
             }
         }
     }
-
-    /// <summary>
-    /// Вспомогательный метод перевода списка тем в реальном времени
-    /// </summary>
     private void RefreshThemesList()
     {
         string? currentSelectedId = _selectedTheme.Key;
@@ -188,5 +195,58 @@ public class SettingsViewModel : ViewModelBase
                 OnPropertyChanged(nameof(SelectedTheme));
             }
         }
+    }
+    [RelayCommand]
+    private async Task AddHtmlRuleAsync()
+    {
+        if (string.IsNullOrWhiteSpace(NewHtmlRuleName) || string.IsNullOrWhiteSpace(NewHtmlOpenTag))
+            return;
+
+        var rule = new CustomHtmlRule
+        {
+            Name = NewHtmlRuleName.Trim(),
+            OpenTag = NewHtmlOpenTag.Trim(),
+            CloseTag = NewHtmlCloseTag.Trim(),
+            AssociatedCss = NewHtmlAssociatedCss.Trim()
+        };
+
+        await App.Services.CustomHtmlRules.AddOrUpdateAsync(rule);
+        HtmlRules.Add(rule);
+
+        NewHtmlRuleName = NewHtmlOpenTag = NewHtmlCloseTag = NewHtmlAssociatedCss = string.Empty;
+    }
+
+    [RelayCommand]
+    private async Task DeleteHtmlRuleAsync(CustomHtmlRule? rule)
+    {
+        if (rule == null) return;
+        await App.Services.CustomHtmlRules.DeleteAsync(rule.Id);
+        HtmlRules.Remove(rule);
+    }
+
+    [RelayCommand]
+    private async Task AddCssTemplateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(NewCssTemplateName) || string.IsNullOrWhiteSpace(NewCssTemplateCode))
+            return;
+
+        var tpl = new CustomCssTemplate
+        {
+            Name = NewCssTemplateName.Trim(),
+            CssCode = NewCssTemplateCode.Trim()
+        };
+
+        await App.Services.CustomCssTemplates.AddOrUpdateAsync(tpl);
+        CssTemplates.Add(tpl);
+
+        NewCssTemplateName = NewCssTemplateCode = string.Empty;
+    }
+
+    [RelayCommand]
+    private async Task DeleteCssTemplateAsync(CustomCssTemplate? tpl)
+    {
+        if (tpl == null) return;
+        await App.Services.CustomCssTemplates.DeleteAsync(tpl.Id);
+        CssTemplates.Remove(tpl);
     }
 }

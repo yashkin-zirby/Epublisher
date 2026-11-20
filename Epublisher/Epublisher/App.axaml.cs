@@ -80,6 +80,8 @@ public partial class App : Application
         try
         {
             await Services.RecentFiles.InitializeAsync();
+            await App.Services.CustomHtmlRules.InitializeAsync();
+            await App.Services.CustomCssTemplates.InitializeAsync();
         }
         catch (Exception ex)
         {

@@ -22,6 +22,8 @@ namespace Epublisher.DataEntities
 
         [ObservableProperty]
         private bool _isUsed;
+        [ObservableProperty]
+        private bool _isCover;
 
         public string SizeDisplay { get; set; } = string.Empty;
     }

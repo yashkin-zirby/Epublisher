@@ -2,6 +2,7 @@
 using Avalonia.Styling;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -15,6 +16,22 @@ namespace Epublisher.Helpers
                 ? $"#{c.R:X2}{c.G:X2}{c.B:X2}"
                 : $"#{c.R:X2}{c.G:X2}{c.B:X2}{c.A:X2}";
         }
+        public static string GetCssFontFormat(string extension) =>
+    extension.ToLowerInvariant() switch
+    {
+        ".otf" => "opentype",
+        ".woff" => "woff",
+        ".woff2" => "woff2",
+        _ => "truetype" // .ttf
+    };
+        public static string GetFontMimeType(string extension) =>
+    extension.ToLowerInvariant() switch
+    {
+        ".otf" => "font/otf",
+        ".woff" => "font/woff",
+        ".woff2" => "font/woff2",
+        _ => "font/ttf"
+    };
         public const string BaseBodyCss = "body { font-family: serif; line-height: 1.6; margin: 1em; }";
         public const string BaseHeadingsCss = "h1, h2, h3 { text-align: center; margin-top: 0.5em; margin-bottom: 0.4em; }";
         public const string BaseParagraphCss = "p { text-indent: 1.5em; margin: 0.4em 0; text-align: justify; }";
@@ -188,6 +205,134 @@ namespace Epublisher.Helpers
                 : bottomRulesSb.ToString().Trim();
 
             return combined.Trim();
+        }
+        public static string AddFontFaceRule(string? existingCss, string fontFileName, string relativeFontPath)
+        {
+            string css = existingCss ?? string.Empty;
+            if (css.Contains(fontFileName, StringComparison.OrdinalIgnoreCase))
+                return css;
+
+            string familyName = Path.GetFileNameWithoutExtension(fontFileName);
+            string format = GetCssFontFormat(Path.GetExtension(fontFileName));
+
+            string fontFaceBlock =
+                $"@font-face {{\n" +
+                $"    font-family: '{familyName}';\n" +
+                $"    src: url('{relativeFontPath}') format('{format}');\n" +
+                $"    font-weight: normal;\n" +
+                $"    font-style: normal;\n" +
+                $"}}";
+
+            var sb = new StringBuilder(css.Trim());
+            if (sb.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine();
+            }
+            sb.AppendLine(fontFaceBlock);
+
+            return sb.ToString().Trim();
+        }
+        public static bool IsFontUsed(string? css, string allChaptersHtml, string fontFileName)
+        {
+            string safeCss = css ?? string.Empty;
+            string defaultFamily = Path.GetFileNameWithoutExtension(fontFileName);
+
+            // Find custom font-family name declared inside the @font-face block for this file (if user renamed the family)
+            string declaredFamily = defaultFamily;
+            var fontFaceMatches = Regex.Matches(safeCss, @"@font-face\s*\{[^}]*\}", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            foreach (Match m in fontFaceMatches)
+            {
+                if (m.Value.Contains(fontFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    var famMatch = Regex.Match(m.Value, @"font-family\s*:\s*['""]?([^;'""\}]+)['""]?", RegexOptions.IgnoreCase);
+                    if (famMatch.Success)
+                    {
+                        declaredFamily = famMatch.Groups[1].Value.Trim();
+                    }
+                }
+            }
+            string cssWithoutDeclarations = Regex.Replace(safeCss, @"@font-face\s*\{[^}]*\}", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            return cssWithoutDeclarations.Contains(declaredFamily, StringComparison.OrdinalIgnoreCase) ||
+                   cssWithoutDeclarations.Contains(fontFileName, StringComparison.OrdinalIgnoreCase) ||
+                   allChaptersHtml.Contains(declaredFamily, StringComparison.OrdinalIgnoreCase) ||
+                   allChaptersHtml.Contains(fontFileName, StringComparison.OrdinalIgnoreCase);
+        }
+        public static string RemoveFontFaceRule(string? css, string fontFileName)
+        {
+            if (string.IsNullOrWhiteSpace(css)) return string.Empty;
+
+            string cleaned = Regex.Replace(
+                css,
+                $@"@font-face\s*\{{[^}}]*{Regex.Escape(fontFileName)}[^}}]*\}}\s*",
+                string.Empty,
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            return cleaned.Trim();
+        }
+        public static string EnsureCustomRuleCssExists(string? existingCss, string? associatedCss)
+        {
+            if (string.IsNullOrWhiteSpace(associatedCss))
+                return existingCss ?? string.Empty;
+
+            string css = existingCss ?? string.Empty;
+            string trimmedRule = associatedCss.Trim();
+
+            // Extract the selector before '{' (e.g., ".author-note" from ".author-note { ... }")
+            int braceIdx = trimmedRule.IndexOf('{');
+            string selector = braceIdx > 0 ? trimmedRule.Substring(0, braceIdx).Trim() : trimmedRule;
+
+            if (!string.IsNullOrEmpty(selector) && css.Contains(selector, StringComparison.OrdinalIgnoreCase))
+                return css;
+
+            var sb = new StringBuilder(css.Trim());
+            if (sb.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine();
+            }
+            sb.AppendLine(trimmedRule);
+
+            return sb.ToString().Trim();
+        }
+        public static string ApplyFontToBody(string? existingCss, string fontFileName)
+        {
+            string css = existingCss ?? string.Empty;
+            string familyName = Path.GetFileNameWithoutExtension(fontFileName);
+
+            // Check if @font-face defines a custom font-family name
+            var fontFaceMatches = Regex.Matches(css, @"@font-face\s*\{[^}]*\}", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            foreach (Match m in fontFaceMatches)
+            {
+                if (m.Value.Contains(fontFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    var famMatch = Regex.Match(m.Value, @"font-family\s*:\s*['""]?([^;'""\}]+)['""]?", RegexOptions.IgnoreCase);
+                    if (famMatch.Success)
+                        familyName = famMatch.Groups[1].Value.Trim();
+                }
+            }
+
+            if (Regex.IsMatch(css, @"(?:^|[\s\}])body\s*\{", RegexOptions.IgnoreCase))
+            {
+                // Update or insert font-family inside existing body { ... }
+                return Regex.Replace(
+                    css,
+                    @"((?:^|[\s\}])body\s*\{)([^}]*)(\})",
+                    m =>
+                    {
+                        string bodyRules = m.Groups[2].Value;
+                        if (Regex.IsMatch(bodyRules, @"font-family\s*:", RegexOptions.IgnoreCase))
+                            bodyRules = Regex.Replace(bodyRules, @"font-family\s*:[^;]+;", $"font-family: '{familyName}', serif;", RegexOptions.IgnoreCase);
+                        else
+                            bodyRules = $"\n    font-family: '{familyName}', serif;{bodyRules}";
+
+                        return $"{m.Groups[1].Value}{bodyRules}{m.Groups[3].Value}";
+                    },
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            }
+
+            return $"body {{\n    font-family: '{familyName}', serif;\n}}\n\n{css}".Trim();
         }
     }
 }

@@ -50,6 +50,16 @@ namespace Epublisher.ViewModels
         private int _activeEditorTabIndex;
         [ObservableProperty] 
         private ObservableCollection<BookResourceItem> _imageResources = new();
+        [ObservableProperty]
+        private ObservableCollection<BookResourceItem> _fontResources = new();
+        public IReadOnlyList<CustomHtmlRule> CustomHtmlRules => App.Services.CustomHtmlRules.Rules;
+        public IReadOnlyList<CustomCssTemplate> CustomCssTemplates => App.Services.CustomCssTemplates.Templates;
+
+        [ObservableProperty]
+        private CustomHtmlRule? _selectedHtmlRule;
+
+        [ObservableProperty]
+        private CustomCssTemplate? _selectedCssTemplate;
 
         [ObservableProperty]
         private Uri? _previewUri;
@@ -255,7 +265,7 @@ namespace Epublisher.ViewModels
                 Book.LastMode = LastWorkMode.Editing;
                 await App.Services.RecentFiles.AddOrUpdateAsync(Book);
                 await SaveAndRebuildPreviewAsync();
-                RefreshImageResources();
+                RefreshAllResources();
             }
             catch (Exception ex)
             {
@@ -291,6 +301,13 @@ namespace Epublisher.ViewModels
                     ExceptionProcesser.Process(ex);
                 }
             }, token);
+        }
+        [RelayCommand]
+        private void ApplyFontToBody(BookResourceItem? font)
+        {
+            if (font == null) return;
+            CustomCssContent = CssHelper.ApplyFontToBody(CustomCssContent, font.FullFileName);
+            RefreshAllResources();
         }
         [RelayCommand]
         private void GenerateOrUpdateTocPage()
@@ -335,6 +352,74 @@ namespace Epublisher.ViewModels
             ScheduleRebuildPreview();
         }
         [RelayCommand]
+        private async Task SetAsCoverAsync(BookResourceItem? resource)
+        {
+            if (resource == null || !File.Exists(resource.FullFilePath))
+                return;
+
+            await _saveLock.WaitAsync();
+            try
+            {
+                string opfPath = Directory.GetFiles(Book.InternalEpubPath, "*.opf", SearchOption.AllDirectories).First();
+                XDocument opfDoc = XDocument.Load(opfPath);
+                XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
+
+                // 1. Обновляем <meta name="cover" content="..." />
+                var meta = opfDoc.Root.Element(opfNs + "metadata");
+                if (meta != null)
+                {
+                    var coverMeta = meta.Descendants()
+                        .FirstOrDefault(x => x.Name.LocalName == "meta" && x.Attribute("name")?.Value == "cover");
+
+                    if (coverMeta != null)
+                    {
+                        coverMeta.SetAttributeValue("content", resource.ManifestId);
+                    }
+                    else
+                    {
+                        meta.Add(new XElement(opfNs + "meta",
+                            new XAttribute("name", "cover"),
+                            new XAttribute("content", resource.ManifestId)));
+                    }
+                }
+
+                // 2. Переносим properties="cover-image" на выбранную картинку в <manifest>
+                var manifest = opfDoc.Root.Element(opfNs + "manifest");
+                if (manifest != null)
+                {
+                    foreach (var item in manifest.Elements(opfNs + "item"))
+                    {
+                        string id = item.Attribute("id")?.Value ?? string.Empty;
+                        if (id == resource.ManifestId)
+                        {
+                            item.SetAttributeValue("properties", "cover-image");
+                        }
+                        else if (item.Attribute("properties")?.Value?.Contains("cover-image") == true)
+                        {
+                            item.Attribute("properties")?.Remove();
+                        }
+                    }
+                }
+
+                opfDoc.Save(opfPath);
+
+                // 3. Обновляем путь миниатюры обложки в библиотеке (RecentFiles)
+                Book.CoverThumbnailPath = resource.FullFilePath;
+                await App.Services.RecentFiles.AddOrUpdateAsync(Book);
+            }
+            catch (Exception ex)
+            {
+                ExceptionProcesser.Process(ex);
+            }
+            finally
+            {
+                _saveLock.Release();
+            }
+
+            RefreshAllResources();
+        }
+
+        [RelayCommand]
         public async Task SaveAndRebuildPreviewAsync()
         {
             await _saveLock.WaitAsync();
@@ -357,7 +442,7 @@ namespace Epublisher.ViewModels
                     await WriteTextWithRetryAsync(cssFile, CustomCssContent);
                 }
 
-                await PersistBookStructureAsync(opfDir);
+                await EpubStructureWriter.UpdateExistingBookStructureAsync(opfDir, Book.Id, BookTitle, BookAuthor, BookLanguage, Chapters);
 
                 string previewPath;
                 if (IsSingleChapterPreview && SelectedChapter != null && File.Exists(SelectedChapter.FullFilePath))
@@ -417,89 +502,6 @@ namespace Epublisher.ViewModels
             {
                 SelectedChapter = target;
             }
-        }
-        private async Task PersistBookStructureAsync(string opfDir)
-        {
-            string textDir = Path.Combine(opfDir, "Text");
-            Directory.CreateDirectory(textDir);
-
-            string cssRelHref = "../Styles/style.css";
-            string? existingCss = Directory.GetFiles(opfDir, "*.css", SearchOption.AllDirectories).FirstOrDefault();
-            if (existingCss != null)
-            {
-                cssRelHref = "../" + Path.GetRelativePath(opfDir, existingCss).Replace('\\', '/');
-            }
-
-            for (int i = 0; i < Chapters.Count; i++)
-            {
-                var ch = Chapters.ElementAt(i);
-                if (string.IsNullOrEmpty(ch.FullFilePath))
-                {
-                    string fileName = $"ch{i + 1:D3}.xhtml";
-                    ch.Id = $"ch{i + 1:D3}";
-                    ch.RelativeHref = $"Text/{fileName}";
-                    ch.FullFilePath = Path.Combine(textDir, fileName);
-                }
-
-                string safeTitle = WebUtility.HtmlEncode(ch.Title);
-                string xhtml =
-                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
-                    "<!DOCTYPE html>\n" +
-                    "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n" +
-                    "<head>\n" +
-                    $"  <title>{safeTitle}</title>\n" +
-                    $"  <link rel=\"stylesheet\" type=\"text/css\" href=\"{cssRelHref}\"/>\n" +
-                    "</head>\n" +
-                    "<body>\n" +
-                    $"{ch.BodyHtml}\n" +
-                    "</body>\n" +
-                    "</html>";
-                await WriteTextWithRetryAsync(ch.FullFilePath, xhtml);
-            }
-
-            string opfPath = Directory.GetFiles(opfDir, "*.opf", SearchOption.TopDirectoryOnly).First();
-            XDocument opfDoc = XDocument.Load(opfPath);
-            XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
-            XNamespace dcNs = "http://purl.org";
-
-            var meta = opfDoc.Root.Element(opfNs + "metadata");
-            if (meta != null)
-            {
-                SetOrCreateElement(meta, dcNs + "title", BookTitle);
-                SetOrCreateElement(meta, dcNs + "creator", BookAuthor);
-                SetOrCreateElement(meta, dcNs + "language", BookLanguage);
-            }
-
-            var manifest = opfDoc.Root.Element(opfNs + "manifest");
-            var spine = opfDoc.Root.Element(opfNs + "spine");
-            if (manifest != null && spine != null)
-            {
-                manifest.Elements(opfNs + "item")
-                    .Where(x => x.Attribute("media-type")?.Value == "application/xhtml+xml")
-                    .Remove();
-
-                spine.Elements(opfNs + "itemref").Remove();
-
-                foreach (var ch in Chapters)
-                {
-                    manifest.Add(new XElement(opfNs + "item",
-                        new XAttribute("id", ch.Id),
-                        new XAttribute("href", ch.RelativeHref),
-                        new XAttribute("media-type", "application/xhtml+xml")));
-
-                    spine.Add(new XElement(opfNs + "itemref",
-                        new XAttribute("idref", ch.Id)));
-                }
-            }
-
-            opfDoc.Save(opfPath);
-        }
-
-        private static void SetOrCreateElement(XElement parent, XName name, string value)
-        {
-            var el = parent.Element(name);
-            if (el != null) el.Value = value;
-            else parent.Add(new XElement(name, value));
         }
         // --- Управление главами ---
         [RelayCommand]
@@ -584,7 +586,7 @@ namespace Epublisher.ViewModels
 
             await SaveAndRebuildPreviewAsync();
         }
-        public void RefreshImageResources()
+        public void RefreshAllResources()
         {
             try
             {
@@ -593,55 +595,110 @@ namespace Epublisher.ViewModels
 
                 string opfDir = Path.GetDirectoryName(opfPath)!;
                 XDocument opfDoc = XDocument.Load(opfPath);
-                XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
 
-                // Собираем весь HTML всех глав + CSS для проверки, используется ли файл
-                string allChaptersHtml = string.Join("\n", Chapters.Select(c => c.BodyHtml)) + "\n" + CustomCssContent;
+                string allChaptersHtml = string.Join("\n", Chapters.Select(c => c.BodyHtml));
+                string combinedContent = allChaptersHtml + "\n" + CustomCssContent;
 
-                // Проверяем также id обложки в метаданных
-                string? coverId = opfDoc.Descendants(opfNs + "meta")
-                    .FirstOrDefault(m => m.Attribute("name")?.Value == "cover")
+                var allManifestItems = opfDoc.Descendants()
+                    .Where(x => x.Name.LocalName == "item")
+                    .ToList();
+
+                // --- 1. IMAGES ---
+                var imageItems = allManifestItems
+                    .Where(x => x.Attribute("media-type")?.Value?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false)
+                    .ToList();
+
+                string? coverId = opfDoc.Descendants()
+                    .FirstOrDefault(m => m.Name.LocalName == "meta" && m.Attribute("name")?.Value == "cover")
                     ?.Attribute("content")?.Value;
 
-                var list = new ObservableCollection<BookResourceItem>();
-
-                foreach (var item in opfDoc.Descendants(opfNs + "item"))
+                bool hasExplicitCover = imageItems.Any(item =>
                 {
-                    string mediaType = item.Attribute("media-type")?.Value ?? string.Empty;
-                    if (!mediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
-                        continue;
+                    string id = item.Attribute("id")?.Value ?? string.Empty;
+                    bool hasProp = item.Attribute("properties")?.Value?.Split(' ').Contains("cover-image") == true;
+                    return (!string.IsNullOrEmpty(coverId) && id.Equals(coverId, StringComparison.OrdinalIgnoreCase)) || hasProp;
+                });
 
+                var imgList = new ObservableCollection<BookResourceItem>();
+                foreach (var item in imageItems)
+                {
                     string id = item.Attribute("id")?.Value ?? string.Empty;
                     string href = Uri.UnescapeDataString(item.Attribute("href")?.Value ?? string.Empty);
                     string fullPath = Path.Combine(opfDir, href.Replace('/', Path.DirectorySeparatorChar));
-                    string fileName = Path.GetFileName(href);
+                    string fileNameNoExt = Path.GetFileNameWithoutExtension(href);
 
-                    bool isCover = id == coverId || (item.Attribute("properties")?.Value?.Contains("cover-image") == true);
-                    bool isReferenced = isCover || allChaptersHtml.Contains(fileName, StringComparison.OrdinalIgnoreCase);
+                    bool isExplicitCover = (!string.IsNullOrEmpty(coverId) && id.Equals(coverId, StringComparison.OrdinalIgnoreCase)) ||
+                                           (item.Attribute("properties")?.Value?.Split(' ').Contains("cover-image") == true);
 
-                    long sizeBytes = File.Exists(fullPath) ? new FileInfo(fullPath).Length : 0;
-                    string sizeStr = sizeBytes >= 1024 * 1024
-                        ? $"{sizeBytes / (1024.0 * 1024.0):F1} MB"
-                        : $"{Math.Max(1, sizeBytes / 1024)} KB";
+                    bool isCover = isExplicitCover || (!hasExplicitCover && fileNameNoExt.Equals("cover", StringComparison.OrdinalIgnoreCase));
+                    bool isReferenced = isCover || combinedContent.Contains(Path.GetFileName(href), StringComparison.OrdinalIgnoreCase);
 
-                    list.Add(new BookResourceItem
+                    imgList.Add(new BookResourceItem
                     {
                         ManifestId = id,
                         RelativeHref = href,
                         FullFilePath = fullPath,
-                        FileName = Path.GetFileNameWithoutExtension(href),
+                        FileName = fileNameNoExt,
+                        IsCover = isCover,
                         IsUsed = isReferenced,
-                        SizeDisplay = sizeStr
+                        SizeDisplay = FormatFileSize(fullPath)
                     });
                 }
+                ImageResources = imgList;
 
-                ImageResources = list;
+                // --- 2. FONTS ---
+                var fontItems = allManifestItems
+                    .Where(x =>
+                    {
+                        string mt = x.Attribute("media-type")?.Value ?? string.Empty;
+                        string href = x.Attribute("href")?.Value ?? string.Empty;
+                        return mt.StartsWith("font/", StringComparison.OrdinalIgnoreCase) ||
+                               mt.Contains("font", StringComparison.OrdinalIgnoreCase) ||
+                               href.EndsWith(".ttf", StringComparison.OrdinalIgnoreCase) ||
+                               href.EndsWith(".otf", StringComparison.OrdinalIgnoreCase) ||
+                               href.EndsWith(".woff", StringComparison.OrdinalIgnoreCase) ||
+                               href.EndsWith(".woff2", StringComparison.OrdinalIgnoreCase);
+                    })
+                    .ToList();
+
+                var fontList = new ObservableCollection<BookResourceItem>();
+                foreach (var item in fontItems)
+                {
+                    string id = item.Attribute("id")?.Value ?? string.Empty;
+                    string href = Uri.UnescapeDataString(item.Attribute("href")?.Value ?? string.Empty);
+                    string fullPath = Path.Combine(opfDir, href.Replace('/', Path.DirectorySeparatorChar));
+                    string fullFileName = Path.GetFileName(href);
+                    string fileNameNoExt = Path.GetFileNameWithoutExtension(href);
+
+                    bool isFontUsed = CssHelper.IsFontUsed(CustomCssContent, allChaptersHtml, fullFileName);
+
+                    fontList.Add(new BookResourceItem
+                    {
+                        ManifestId = id,
+                        RelativeHref = href,
+                        FullFilePath = fullPath,
+                        FileName = fileNameNoExt,
+                        IsCover = false,
+                        IsUsed = isFontUsed,
+                        SizeDisplay = FormatFileSize(fullPath)
+                    });
+                }
+                FontResources = fontList;
             }
             catch (Exception ex)
             {
                 ExceptionProcesser.Process(ex);
             }
         }
+
+        private static string FormatFileSize(string fullPath)
+        {
+            long sizeBytes = File.Exists(fullPath) ? new FileInfo(fullPath).Length : 0;
+            return sizeBytes >= 1024 * 1024
+                ? $"{sizeBytes / (1024.0 * 1024.0):F1} MB"
+                : $"{Math.Max(1, sizeBytes / 1024)} KB";
+        }
+
 
         public async Task RenameImageResourceAsync(BookResourceItem resource, string newFileName)
         {
@@ -723,13 +780,13 @@ namespace Epublisher.ViewModels
             }
 
             await SaveAndRebuildPreviewAsync();
-            RefreshImageResources();
+            RefreshAllResources();
         }
 
         [RelayCommand]
         private async Task DeleteUnusedResourcesAsync()
         {
-            RefreshImageResources();
+            RefreshAllResources();
 
             await _saveLock.WaitAsync();
             try
@@ -775,7 +832,7 @@ namespace Epublisher.ViewModels
                 _saveLock.Release();
             }
 
-            RefreshImageResources();
+            RefreshAllResources();
             await SaveAndRebuildPreviewAsync();
         }
         [RelayCommand]
@@ -816,6 +873,62 @@ namespace Epublisher.ViewModels
                 Chapters.Move(idx, idx + 1);
                 ScheduleRebuildPreview();
             }
+        }
+        public async Task SaveFontAssetToBookAsync(string originalFileName, byte[] fontBytes)
+        {
+            await _saveLock.WaitAsync();
+            try
+            {
+                string opfPath = Directory.GetFiles(Book.InternalEpubPath, "*.opf", SearchOption.AllDirectories).First();
+                string opfDir = Path.GetDirectoryName(opfPath)!;
+                string fontsDir = Path.Combine(opfDir, "Fonts");
+                Directory.CreateDirectory(fontsDir);
+
+                string ext = Path.GetExtension(originalFileName);
+                if (string.IsNullOrEmpty(ext)) ext = ".ttf";
+
+                string baseName = Path.GetFileNameWithoutExtension(originalFileName);
+                string safeFileName = $"{baseName}{ext}";
+                string fullDestPath = Path.Combine(fontsDir, safeFileName);
+
+                // Avoid overwriting an existing font with the same name
+                if (File.Exists(fullDestPath))
+                {
+                    safeFileName = $"{baseName}_{DateTime.UtcNow.Ticks % 10000}{ext}";
+                    fullDestPath = Path.Combine(fontsDir, safeFileName);
+                }
+
+                await File.WriteAllBytesAsync(fullDestPath, fontBytes);
+
+                // 1. Register font in content.opf <manifest>
+                XDocument opfDoc = XDocument.Load(opfPath);
+                XNamespace opfNs = opfDoc.Root!.GetDefaultNamespace();
+                var manifest = opfDoc.Root.Element(opfNs + "manifest");
+                if (manifest != null)
+                {
+                    string mime = CssHelper.GetFontMimeType(ext);
+                    string uniqueFontId = $"font_{Guid.NewGuid().ToString("N").Substring(0, 6)}";
+                    manifest.Add(new XElement(opfNs + "item",
+                        new XAttribute("id", uniqueFontId),
+                        new XAttribute("href", $"Fonts/{safeFileName}"),
+                        new XAttribute("media-type", mime)));
+                    opfDoc.Save(opfPath);
+                }
+
+                // 2. Automatically add @font-face rule to CustomCssContent via CssHelper
+                CustomCssContent = CssHelper.AddFontFaceRule(CustomCssContent, safeFileName, $"../Fonts/{safeFileName}");
+            }
+            catch (Exception ex)
+            {
+                ExceptionProcesser.Process(ex);
+            }
+            finally
+            {
+                _saveLock.Release();
+            }
+
+            await SaveAndRebuildPreviewAsync();
+            RefreshAllResources();
         }
         public async Task<string?> SaveImageAssetToBookAsync(string originalFileName, byte[] imageBytes)
         {

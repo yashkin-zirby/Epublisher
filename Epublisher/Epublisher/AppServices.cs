@@ -23,6 +23,8 @@ namespace Epublisher
         public IMessageAlerter MessageAlerter { get; } = null!;
         public BookImportManager BookImporter { get; }
         public EpubExportService BookExporter { get; }
+        public CustomHtmlRulesManager CustomHtmlRules { get; }
+        public CustomCssTemplatesManager CustomCssTemplates { get; }
 
         public AppServices(string appDataFolder, IMessageAlerter messageAlerter)
         {
@@ -38,6 +40,12 @@ namespace Epublisher
 
             IRecentFilesRepository recentRepo = new JsonRecentFilesRepository(appDataFolder);
             RecentFiles = new RecentFilesManager(recentRepo);
+
+            IHtmlRulesRepository htmlRulesRepo = new HtmlRulesFileRepository(appDataFolder);
+            CustomHtmlRules = new CustomHtmlRulesManager(htmlRulesRepo);
+
+            ICssTemplatesRepository cssTemplatesRepo = new CssTemplatesFileRepository(appDataFolder);
+            CustomCssTemplates = new CustomCssTemplatesManager(cssTemplatesRepo);
 
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
@@ -67,8 +75,8 @@ namespace Epublisher
             LogManager.Instance.AddRule((CultureNotFoundException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Culture not found in OS"); }, LogLevel.Warning, logger);
             LogManager.Instance.AddRule((UnauthorizedAccessException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Permission for access denied by OS"); }, LogLevel.Warning, logger);
             LogManager.Instance.AddRule((JsonException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Invalid JSON"); }, LogLevel.Warning, logger);
-            LogManager.Instance.AddRule((NotSupportedException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Invalid JSON"); }, LogLevel.Warning, logger);
-            LogManager.Instance.AddRule((PdfImageExtractionException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Invalid JSON"); }, LogLevel.Debug, logger);
+            LogManager.Instance.AddRule((NotSupportedException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Not supported"); }, LogLevel.Warning, logger);
+            LogManager.Instance.AddRule((PdfImageExtractionException ex, LogLevel level, ILogger log) => { log.Log(level, ex, "Unable to exctract image from pdf"); }, LogLevel.Debug, logger);
         }
     }
 }
