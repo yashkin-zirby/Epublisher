@@ -69,14 +69,11 @@ namespace Epublisher.ViewModels
         [ObservableProperty]
         private bool _isSingleChapterPreview;
 
-        // Выбранная глава для вставки ссылки в оглавление
         [ObservableProperty]
         private EditableChapterItem? _targetChapterForLink;
 
-        // Событие для плавной прокрутки превью к выбранной главе (передает индекс главы)
         public event Action<int>? ScrollPreviewToChapterRequested;
 
-        // События для UI (вставка картинки, перезагрузка WebView, экспорт)
         public event Func<Task<(string FileName, byte[] Bytes)?>>? PickImageRequested;
         public event Func<RecentFile, Task>? ExportBookRequested;
         public event Action? PreviewHtmlRebuilt;

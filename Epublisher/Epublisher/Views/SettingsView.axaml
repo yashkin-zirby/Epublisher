@@ -14,7 +14,7 @@
     <ScrollViewer>
         <StackPanel Margin="20" Spacing="15">
             <TextBlock Text="{DynamicResource Settings.Title}" FontSize="20" FontWeight="Bold"/>
-            
+
             <TextBlock Text="{DynamicResource Settings.Language}"/>
             <ComboBox ItemsSource="{Binding LanguagesList}"
                       SelectedItem="{Binding SelectedLanguage, Mode=TwoWay}"
@@ -31,17 +31,17 @@
                       HorizontalAlignment="Stretch"
                       IsExpanded="False">
                 <StackPanel Spacing="10" Margin="5">
-                    
+
                     <CheckBox Content="{DynamicResource Settings.Logging.AllowLog}"
                               IsChecked="{Binding AllowLog, Mode=TwoWay}" />
 
                     <StackPanel Spacing="8" Margin="20,0,0,0" IsEnabled="{Binding AllowLog}">
                         <CheckBox Content="{DynamicResource Settings.Logging.AllowDebug}"
                                   IsChecked="{Binding AllowLogDebug, Mode=TwoWay}" />
-                        
+
                         <CheckBox Content="{DynamicResource Settings.Logging.AllowWarning}"
                                   IsChecked="{Binding AllowLogWarning, Mode=TwoWay}" />
-                        
+
                         <CheckBox Content="{DynamicResource Settings.Logging.AllowError}"
                                   IsChecked="{Binding AllowLogError, Mode=TwoWay}" />
                     </StackPanel>
@@ -58,155 +58,170 @@
                 </StackPanel>
             </Expander>
             <!-- CUSTOM HTML RULES CARD -->
-<Border Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
-        CornerRadius="8"
-        Padding="16"
-        Margin="0,0,0,16">
-    <StackPanel Spacing="12">
-        <TextBlock Text="{DynamicResource Settings.CustomHtmlSectionTitle}"
-                   FontSize="16"
-                   FontWeight="Bold" />
+            <Expander Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+                      HorizontalAlignment="Stretch"
+                       Header="{DynamicResource Settings.CustomHtmlSectionTitle}">
+                <StackPanel Spacing="12">
 
-        <!-- Add new HTML Rule form -->
-        <Grid ColumnDefinitions="*, *" RowDefinitions="Auto, Auto, Auto" ColumnSpacing="8" RowSpacing="8">
-            <TextBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
-                     Text="{Binding NewHtmlRuleName, Mode=TwoWay}"
-                     Watermark="{DynamicResource Settings.RuleNamePlaceholder}" />
+                    <!-- Add new HTML Rule form -->
+                    <Grid ColumnDefinitions="*, *" RowDefinitions="Auto, Auto, Auto" ColumnSpacing="8" RowSpacing="8">
+                        <TextBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                                 Text="{Binding NewHtmlRuleName, Mode=TwoWay}"
+                                 PlaceholderText="{DynamicResource Settings.RuleNamePlaceholder}" />
 
-            <TextBox Grid.Row="1" Grid.Column="0"
-                     Text="{Binding NewHtmlOpenTag, Mode=TwoWay}"
-                     Watermark="{DynamicResource Settings.OpenTagPlaceholder}"
-                     FontFamily="Consolas, Monospace" />
+                        <TextBox Grid.Row="1" Grid.Column="0"
+                                 Text="{Binding NewHtmlOpenTag, Mode=TwoWay}"
+                                 PlaceholderText="{DynamicResource Settings.OpenTagPlaceholder}"
+                                 FontFamily="Consolas, Monospace" />
 
-            <TextBox Grid.Row="1" Grid.Column="1"
-                     Text="{Binding NewHtmlCloseTag, Mode=TwoWay}"
-                     Watermark="{DynamicResource Settings.CloseTagPlaceholder}"
-                     FontFamily="Consolas, Monospace" />
+                        <TextBox Grid.Row="1" Grid.Column="1"
+                                 Text="{Binding NewHtmlCloseTag, Mode=TwoWay}"
+                                 PlaceholderText="{DynamicResource Settings.CloseTagPlaceholder}"
+                                 FontFamily="Consolas, Monospace" />
 
-            <TextBox Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
-                     Text="{Binding NewHtmlAssociatedCss, Mode=TwoWay}"
-                     Watermark="{DynamicResource Settings.AssociatedCssPlaceholder}"
-                     AcceptsReturn="True"
-                     TextWrapping="Wrap"
-                     MinHeight="60"
-                     FontFamily="Consolas, Monospace" />
-        </Grid>
+                        <TextBox Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                                 Text="{Binding NewHtmlAssociatedCss, Mode=TwoWay}"
+                                 PlaceholderText="{DynamicResource Settings.AssociatedCssPlaceholder}"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinHeight="60"
+                                 FontFamily="Consolas, Monospace" />
+                    </Grid>
 
-        <Button Command="{Binding AddHtmlRuleCommand}"
-                Content="{DynamicResource Settings.AddRuleButton}"
-                Classes="accent"
-                HorizontalAlignment="Right"
-                Padding="12,6" />
+                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                        <Button Command="{Binding CancelEditHtmlRuleCommand}"
+                                Content="{DynamicResource Settings.CancelButton}"
+                                IsVisible="{Binding IsEditingHtmlRule}"
+                                Padding="12,6" />
+                        <Button Command="{Binding SaveHtmlRuleCommand}"
+                                Classes="accent"
+                                Padding="12,6">
+                            <Panel>
+                                <TextBlock Text="{DynamicResource Settings.AddRuleButton}" IsVisible="{Binding !IsEditingHtmlRule}" />
+                                <TextBlock Text="{DynamicResource Settings.SaveButton}" IsVisible="{Binding IsEditingHtmlRule}" />
+                            </Panel>
+                        </Button>
+                    </StackPanel>
 
-        <!-- Existing HTML Rules list -->
-        <ItemsControl ItemsSource="{Binding HtmlRules}">
-            <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="models:CustomHtmlRule">
-                    <Border BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Padding="10"
-                            Margin="0,0,0,6">
-                        <Grid ColumnDefinitions="*, Auto" ColumnSpacing="8">
-                            <StackPanel Grid.Column="0" Spacing="4">
-                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <TextBlock Text="{Binding OpenTag}"
-                                               FontFamily="Consolas, Monospace"
-                                               FontSize="12"
-                                               Opacity="0.8" />
-                                    <TextBlock Text="…"
-                                               IsVisible="{Binding CloseTag, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                                               Opacity="0.6" />
-                                    <TextBlock Text="{Binding CloseTag}"
-                                               FontFamily="Consolas, Monospace"
-                                               FontSize="12"
-                                               Opacity="0.8" />
-                                </StackPanel>
-                                <TextBlock Text="{Binding AssociatedCss}"
-                                           IsVisible="{Binding AssociatedCss, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
-                                           FontFamily="Consolas, Monospace"
-                                           FontSize="11"
-                                           Opacity="0.6"
-                                           TextTrimming="CharacterEllipsis" />
-                            </StackPanel>
+                    <!-- Existing HTML Rules list -->
+                    <ItemsControl ItemsSource="{Binding HtmlRules}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:CustomHtmlRule">
+                                    <Border BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="10"
+                                            Margin="0,0,0,6">
+                                        <Grid ColumnDefinitions="*, Auto" ColumnSpacing="8">
+                                            <StackPanel Grid.Column="0" Spacing="4">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                    <TextBlock Text="{Binding OpenTag}"
+                                                               FontFamily="Consolas, Monospace"
+                                                               FontSize="12"
+                                                               Opacity="0.8" />
+                                                    <TextBlock Text="…"
+                                                               IsVisible="{Binding CloseTag, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                                               Opacity="0.6" />
+                                                    <TextBlock Text="{Binding CloseTag}"
+                                                               FontFamily="Consolas, Monospace"
+                                                               FontSize="12"
+                                                               Opacity="0.8" />
+                                                </StackPanel>
+                                            </StackPanel>
 
-                            <Button Grid.Column="1"
-                                    Content="×"
-                                    VerticalAlignment="Center"
-                                    Padding="8,4"
-                                    Command="{Binding $parent[ItemsControl].((vm:SettingsViewModel)DataContext).DeleteHtmlRuleCommand}"
-                                    CommandParameter="{Binding}" />
-                        </Grid>
-                    </Border>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
-    </StackPanel>
-</Border>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                <Button Content="✎"
+                                                        Padding="8,4"
+                                                        ToolTip.Tip="{DynamicResource Settings.EditTooltip}"
+                                                        Command="{Binding $parent[ItemsControl].((vm:SettingsViewModel)DataContext).BeginEditHtmlRuleCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Content="×"
+                                                        Padding="8,4"
+                                                        ToolTip.Tip="{DynamicResource Settings.DeleteTooltip}"
+                                                        Command="{Binding $parent[ItemsControl].((vm:SettingsViewModel)DataContext).DeleteHtmlRuleCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                </StackPanel>
+            </Expander>
 
-<!-- CUSTOM CSS TEMPLATES CARD -->
-<Border Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
-        CornerRadius="8"
-        Padding="16"
-        Margin="0,0,0,16">
-    <StackPanel Spacing="12">
-        <TextBlock Text="{DynamicResource Settings.CustomCssSectionTitle}"
-                   FontSize="16"
-                   FontWeight="Bold" />
+            <!-- CUSTOM CSS TEMPLATES CARD -->
+            <Expander Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+                      HorizontalAlignment="Stretch"
+                       Header="{DynamicResource Settings.CustomCssSectionTitle}">
+                <StackPanel Spacing="12">
+                    <!-- Add new CSS Template form -->
+                    <StackPanel Spacing="8">
+                        <TextBox Text="{Binding NewCssTemplateName, Mode=TwoWay}"
+                                 PlaceholderText="{DynamicResource Settings.TemplateNamePlaceholder}" />
 
-        <!-- Add new CSS Template form -->
-        <StackPanel Spacing="8">
-            <TextBox Text="{Binding NewCssTemplateName, Mode=TwoWay}"
-                     Watermark="{DynamicResource Settings.TemplateNamePlaceholder}" />
+                        <TextBox Text="{Binding NewCssTemplateCode, Mode=TwoWay}"
+                                 PlaceholderText="{DynamicResource Settings.CssCodePlaceholder}"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 MinHeight="72"
+                                 FontFamily="Consolas, Monospace" />
+                    </StackPanel>
 
-            <TextBox Text="{Binding NewCssTemplateCode, Mode=TwoWay}"
-                     Watermark="{DynamicResource Settings.CssCodePlaceholder}"
-                     AcceptsReturn="True"
-                     TextWrapping="Wrap"
-                     MinHeight="72"
-                     FontFamily="Consolas, Monospace" />
-        </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                        <Button Command="{Binding CancelEditCssTemplateCommand}"
+                                Content="{DynamicResource Settings.CancelButton}"
+                                IsVisible="{Binding IsEditingCssTemplate}"
+                                Padding="12,6" />
+                        <Button Command="{Binding SaveCssTemplateCommand}"
+                                Classes="accent"
+                                Padding="12,6">
+                            <Panel>
+                                <TextBlock Text="{DynamicResource Settings.AddTemplateButton}" IsVisible="{Binding !IsEditingCssTemplate}" />
+                                <TextBlock Text="{DynamicResource Settings.SaveButton}" IsVisible="{Binding IsEditingCssTemplate}" />
+                            </Panel>
+                        </Button>
+                    </StackPanel>
 
-        <Button Command="{Binding AddCssTemplateCommand}"
-                Content="{DynamicResource Settings.AddTemplateButton}"
-                Classes="accent"
-                HorizontalAlignment="Right"
-                Padding="12,6" />
+                    <!-- Existing CSS Templates list -->
+                    <ItemsControl ItemsSource="{Binding CssTemplates}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:CustomCssTemplate">
+                                    <Border BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="10"
+                                            Margin="0,0,0,6">
+                                        <Grid ColumnDefinitions="*, Auto" ColumnSpacing="8">
+                                            <StackPanel Grid.Column="0" Spacing="4">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                                                <TextBlock Text="{Binding CssCode}"
+                                                           FontFamily="Consolas, Monospace"
+                                                           FontSize="11"
+                                                           Opacity="0.7"
+                                                           MaxLines="2"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
 
-        <!-- Existing CSS Templates list -->
-        <ItemsControl ItemsSource="{Binding CssTemplates}">
-            <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="models:CustomCssTemplate">
-                    <Border BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
-                            BorderThickness="1"
-                            CornerRadius="6"
-                            Padding="10"
-                            Margin="0,0,0,6">
-                        <Grid ColumnDefinitions="*, Auto" ColumnSpacing="8">
-                            <StackPanel Grid.Column="0" Spacing="4">
-                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
-                                <TextBlock Text="{Binding CssCode}"
-                                           FontFamily="Consolas, Monospace"
-                                           FontSize="11"
-                                           Opacity="0.7"
-                                           MaxLines="2"
-                                           TextTrimming="CharacterEllipsis" />
-                            </StackPanel>
-
-                            <Button Grid.Column="1"
-                                    Content="×"
-                                    VerticalAlignment="Center"
-                                    Padding="8,4"
-                                    Command="{Binding $parent[ItemsControl].((vm:SettingsViewModel)DataContext).DeleteCssTemplateCommand}"
-                                    CommandParameter="{Binding}" />
-                        </Grid>
-                    </Border>
-                </DataTemplate>
-            </ItemsControl.ItemTemplate>
-        </ItemsControl>
-    </StackPanel>
-</Border>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                <Button Content="✎"
+                                                        Padding="8,4"
+                                                        ToolTip.Tip="{DynamicResource Settings.EditTooltip}"
+                                                        Command="{Binding $parent[ItemsControl].((vm:SettingsViewModel)DataContext).BeginEditCssTemplateCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Content="×"
+                                                        Padding="8,4"
+                                                        ToolTip.Tip="{DynamicResource Settings.DeleteTooltip}"
+                                                        Command="{Binding $parent[ItemsControl].((vm:SettingsViewModel)DataContext).DeleteCssTemplateCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                </StackPanel>
+            </Expander>
         </StackPanel>
     </ScrollViewer>
 </ContentPage>

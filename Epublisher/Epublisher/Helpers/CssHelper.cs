@@ -78,16 +78,19 @@ namespace Epublisher.Helpers
     """;
 
         public const string InlineImageCss = """
-        .pdf-image {
-            text-align: center;
-            margin: 1em 0;
-        }
-        .pdf-image img {
-            max-width: 100%;
-            height: auto;
-            display: inline-block;
-        }
-        """;
+    .pdf-image {
+        width: 100%;
+        text-align: center;
+        text-indent: 0;
+        margin: 1em 0;
+    }
+    .pdf-image img {
+        width: 100%;
+        height: auto;
+        display: block;
+        margin: 0 auto;
+    }
+    """;
 
         public const string SceneDividerCss = """
         .scene-break {
@@ -127,6 +130,19 @@ namespace Epublisher.Helpers
             page-break-after: always;
         }
         """;
+        public const string FootnoteCss = """
+    .footnote {
+        font-size: 0.88em;
+        opacity: 0.85;
+        text-indent: 0;
+        margin: 0.6em 0;
+        padding-top: 0.4em;
+        border-top: 1px solid rgba(128, 128, 128, 0.35);
+    }
+    .footnote a, sup a {
+        text-decoration: none;
+    }
+    """;
 
         /// <summary>
         /// Вставляет выбранный CSS-фрагмент в текущую позицию курсора.

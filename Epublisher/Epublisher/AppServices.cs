@@ -34,9 +34,7 @@ namespace Epublisher
             MessageAlerter = messageAlerter;
             Settings = new SettingsManager(appDataFolder);
             Localization = new LocalizationManager(appDataFolder);
-            Localization.LoadLocalizations();
             Theme = new ThemeManager(appDataFolder);
-            Theme.LoadThemePlugins();
 
             IRecentFilesRepository recentRepo = new JsonRecentFilesRepository(appDataFolder);
             RecentFiles = new RecentFilesManager(recentRepo);
@@ -61,7 +59,9 @@ namespace Epublisher
         }
         public void LoadSavedSettings()
         {
+            Localization.LoadLocalizations();
             Localization.ApplyLanguage(Localization.LoadSavedLanguage());
+            Theme.LoadThemePlugins();
             Theme.ApplyTheme(Theme.LoadSavedTheme());
         }
         private void ConfigureLogging(string appDataFolder)

@@ -10,7 +10,7 @@ using System.Xml.Linq;
 
 namespace Epublisher.Helpers
 {
-    public record EpubChapterDraft(string Title, string HtmlBodyContent);
+    public record EpubChapterDraft(string Title, string HtmlBodyContent, string? CustomFileName = null);
 
     public static class EpubStructureWriter
     {
@@ -23,7 +23,8 @@ namespace Epublisher.Helpers
             List<EpubChapterDraft> chapters,
             byte[]? coverBytes = null,
             string coverExtension = ".jpg",
-            Dictionary<string, byte[]>? extraImages = null)
+            Dictionary<string, byte[]>? extraImages = null,
+            string additionalCssStyles = "")
         {
             string metaInfDir = Path.Combine(targetBookFolder, "META-INF");
             string oebpsDir = Path.Combine(targetBookFolder, "OEBPS");
@@ -54,31 +55,11 @@ namespace Epublisher.Helpers
             await File.WriteAllTextAsync(Path.Combine(metaInfDir, "container.xml"), containerXml, Encoding.UTF8);
 
             // 3. Базовый CSS стиль
-            string baseCss = """
-            body { font-family: serif; line-height: 1.6; margin: 1em; }
-            h1, h2, h3 { text-align: center; margin-top: 1.5em; margin-bottom: 0.8em; }
-            p { text-indent: 1.5em; margin: 0.4em 0; text-align: justify; }
-            img { max-width: 100%; height: auto; display: block; margin: 1em auto; }
-            .fullpage-image {
-                width: 100%;
-                min-height: 92vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                break-before: page;
-                page-break-before: always;
-                break-after: page;
-                page-break-after: always;
-                margin: 0;
-                padding: 0;
+            string baseCss = CssHelper.EnsureDefaultEditorStylesExist(string.Empty);
+            if (!string.IsNullOrWhiteSpace(additionalCssStyles))
+            {
+                baseCss = $"{baseCss}\n\n{additionalCssStyles.Trim()}";
             }
-            .fullpage-image img {
-                width: 100%;
-                max-height: 92vh;
-                object-fit: contain;
-                margin: 0;
-            }
-            """;
             await File.WriteAllTextAsync(Path.Combine(stylesDir, "style.css"), baseCss, Encoding.UTF8);
 
             var manifestSb = new StringBuilder();
@@ -125,9 +106,9 @@ namespace Epublisher.Helpers
             for (int i = 0; i < chapters.Count; i++)
             {
                 int num = i + 1;
-                string chapterId = $"ch{num:D3}";
-                string fileName = $"{chapterId}.xhtml";
                 var currentChapter = chapters.ElementAt(i);
+                string chapterId = $"ch{num:D3}";
+                string fileName = !string.IsNullOrWhiteSpace(currentChapter.CustomFileName) ? currentChapter.CustomFileName : $"{chapterId}.xhtml";
                 string safeTitle = WebUtility.HtmlEncode(currentChapter.Title);
                 string xhtml =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +

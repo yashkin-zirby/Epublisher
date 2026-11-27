@@ -16,7 +16,6 @@ namespace Epublisher.Services
     {
         private readonly SemaphoreSlim _fileLock = new(1, 1);
         private readonly IRecentFilesRepository _repository;
-        private readonly int _maxItems;
         private List<RecentFile> _items = new();
 
         public IReadOnlyList<RecentFile> Items => _items;

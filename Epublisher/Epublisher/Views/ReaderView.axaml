@@ -6,17 +6,18 @@
              x:DataType="vm:ReaderViewModel"
              x:Class="Epublisher.Views.ReaderView"
              Header="{Binding BookTitle}">
-  <Grid RowDefinitions="Auto, *, Auto">
+    <Grid RowDefinitions="Auto, *, Auto">
         <Border Grid.Row="0"
                 Padding="12,8"
                 Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
             <Grid ColumnDefinitions="Auto, *, Auto, Auto" ColumnSpacing="10">
+                <!-- Toggle Left Chapter Drawer -->
                 <Button Grid.Column="0"
-                        Click="OnScrollToTopClick"
+                        Command="{Binding ToggleTocDrawerCommand}"
                         Padding="10,6"
-                        ToolTip.Tip="{DynamicResource Reader.ToTop}">
+                        ToolTip.Tip="{DynamicResource Reader.Contents}">
                     <StackPanel Orientation="Horizontal" Spacing="6">
-                        <PathIcon Data="M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z" Width="14" Height="14" />
+                        <PathIcon Data="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z" Width="14" Height="14" />
                         <TextBlock Text="{DynamicResource Reader.Contents}" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
@@ -44,8 +45,63 @@
         </Border>
 
         <Panel Grid.Row="1">
+            <!-- Hide NativeWebView while drawer is open so native HWND/Surface never covers the chapter list -->
             <NativeWebView x:Name="EpubWebView"
-                           Source="{Binding ReaderSourceUri}" />
+                           Source="{Binding ReaderSourceUri}"
+                           IsVisible="{Binding !IsTocDrawerOpen}" />
+
+            <!-- Left Chapter Navigation Drawer -->
+            <Border Width="280"
+                    HorizontalAlignment="Left"
+                    Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+                    BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                    BorderThickness="0,0,1,0"
+                    IsVisible="{Binding IsTocDrawerOpen}"
+                    Padding="12">
+                <Grid RowDefinitions="Auto, Auto, *">
+                    <!-- Drawer Header -->
+                    <Grid Grid.Row="0" ColumnDefinitions="*, Auto" Margin="0,0,0,8">
+                        <TextBlock Text="{DynamicResource Reader.Contents}"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center" />
+                        <Button Grid.Column="1"
+                                Content="✕"
+                                Command="{Binding ToggleTocDrawerCommand}"
+                                Background="Transparent"
+                                Padding="6,2" />
+                    </Grid>
+
+                    <!-- Quick Jump to Top of Book -->
+                    <Button Grid.Row="1"
+                            Click="OnScrollToTopClick"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left"
+                            Margin="0,0,0,8"
+                            Padding="8,6">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <PathIcon Data="M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z" Width="13" Height="13" />
+                            <TextBlock Text="{DynamicResource Reader.ToTop}" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+
+                    <!-- Chapter List -->
+                    <ListBox Grid.Row="2"
+                             ItemsSource="{Binding Chapters}"
+                             SelectedItem="{Binding SelectedChapter, Mode=TwoWay}"
+                             SelectionChanged="OnChapterSelectionChanged"
+                             Background="Transparent">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Title}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Padding="4,6" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
             <Border IsVisible="{Binding IsLoading}"
                     Background="{DynamicResource SystemControlBackgroundAltHighBrush}">
                 <ProgressBar IsIndeterminate="True"

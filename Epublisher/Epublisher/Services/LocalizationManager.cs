@@ -1,4 +1,5 @@
 ﻿using Avalonia;
+using Avalonia.Platform;
 using Epublisher.DataEntities;
 using Epublisher.Helpers;
 using System;
@@ -24,29 +25,7 @@ namespace Epublisher.Services
 
         public void LoadLocalizations()
         {
-            if (!Directory.Exists(_locFolder))
-            {
-                try { 
-                    Directory.CreateDirectory(_locFolder);
-                } catch(Exception e) { ExceptionProcesser.Process(e); return; }
-            }
-            var appDir = Path.Combine(AppContext.BaseDirectory, "Localizations");
-            if (Directory.Exists(appDir))
-            {
-                try {
-                    foreach (string filePath in Directory.GetFiles(appDir))
-                    {
-                        string fileName = Path.GetFileName(filePath);
-                        string destFile = Path.Combine(_locFolder, fileName);
-
-                        File.Copy(filePath, destFile, true);
-                    }
-                }
-                catch (Exception e)
-                {
-                    ExceptionProcesser.Process(e);
-                }
-            }
+            EnsureDefaultLocalizationsExtracted();
             AvailableLanguages.Clear();
             _loadedLocalizations.Clear();
 
@@ -70,7 +49,6 @@ namespace Epublisher.Services
             }
             catch (Exception e) { ExceptionProcesser.Process(e); }
         }
-
         public void ApplyLanguage(string isoCode)
         {
             if (Application.Current == null) return;
@@ -102,6 +80,31 @@ namespace Epublisher.Services
         {
             string defaultSysIso = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
             return App.Services.Settings.GetProperty<string>("UI.Language", defaultSysIso) ?? "en";
+        }
+
+        private void EnsureDefaultLocalizationsExtracted()
+        {
+            if (!Directory.Exists(_locFolder))
+            {
+                try
+                {
+                    Directory.CreateDirectory(_locFolder);
+                }
+                catch (Exception e) { ExceptionProcesser.Process(e); return; }
+            }
+            string[] defaultFiles = { "en.json", "ru.json" };
+            foreach (string fileName in defaultFiles)
+            {
+                string destPath = Path.Combine(_locFolder, fileName);
+
+                var assetUri = new Uri($"avares://Epublisher/Localizations/{fileName}");
+                if (AssetLoader.Exists(assetUri))
+                {
+                    using Stream assetStream = AssetLoader.Open(assetUri);
+                    using FileStream fileStream = File.Create(destPath);
+                    assetStream.CopyTo(fileStream);
+                }
+            }
         }
     }
 }

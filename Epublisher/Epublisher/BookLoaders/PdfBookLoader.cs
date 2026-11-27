@@ -1,4 +1,5 @@
-﻿using Epublisher.DataEntities;
+﻿using CommunityToolkit.Mvvm.DependencyInjection;
+using Epublisher.DataEntities;
 using Epublisher.Exceptions;
 using Epublisher.Helpers;
 using Epublisher.Interfaces;
@@ -9,6 +10,7 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
@@ -18,22 +20,29 @@ using UglyToad.PdfPig.DocumentLayoutAnalysis.PageSegmenter;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.ReadingOrderDetector;
 using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
 using UglyToad.PdfPig.Filters;
+using UglyToad.PdfPig.Graphics.Core;
+using UglyToad.PdfPig.Graphics.Operations.TextState;
 using UglyToad.PdfPig.Parser.Parts;
 using UglyToad.PdfPig.Tokens;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace Epublisher.BookLoaders
 {
     public class PdfBookLoader : IBookLoader
     {
+        private sealed record ParsedParagraph(string PlainText, string HtmlText);
         private sealed class PageLayoutElement
         {
             public double FontSize { get; init; }
             public double TopY { get; init; }
             public double BottomY { get; init; }
-            public string Html { get; init; } = string.Empty;
+            public double LeftX { get; init; }
+            public double RightX { get; init; }
+            public string Html { get; set; } = string.Empty;
             public bool IsHeading { get; init; }
             public bool IsFullPageImage { get; init; }
             public string? ChapterTitleCandidate { get; init; }
+            public string? ImageFileName { get; set; }
         }
         private sealed class ExtractedPdfImage
         {
@@ -44,6 +53,61 @@ namespace Epublisher.BookLoaders
             public double Width { get; init; }
             public double Height { get; init; }
         }
+        private sealed class PdfConversionState
+        {
+            public string? CoverExt { get; set; } = ".png";
+            public byte[]? CoverBytes { get; set; }
+            public Dictionary<string, byte[]> ExtraImages { get; } = new();
+            public List<EpubChapterDraft> Chapters { get; } = new();
+            public StringBuilder CurrentChapterSb { get; } = new();
+            public string CurrentChapterTitle { get; set; }
+            public bool HasContentInCurrentChapter { get; set; }
+            public bool CurrentChapterHasHeading { get; set; }
+            public int LastHeadingPageNum { get; set; } = -1;
+            public bool IsCollectingChapterTitle { get; set; }
+            public List<(int PageNum, string ImgFileName)> PendingFullPageImages { get; } = new();
+
+            public PdfConversionState(string initialTitle)
+            {
+                CurrentChapterTitle = initialTitle;
+            }
+
+            public void FlushCurrentChapter()
+            {
+                if (HasContentInCurrentChapter && CurrentChapterSb.Length > 0)
+                {
+                    Chapters.Add(new EpubChapterDraft(CurrentChapterTitle, CurrentChapterSb.ToString()));
+                    CurrentChapterSb.Clear();
+                    HasContentInCurrentChapter = false;
+                    CurrentChapterHasHeading = false;
+                }
+            }
+
+            public void FlushPendingImagesAsStandaloneChapters()
+            {
+                foreach (var img in PendingFullPageImages)
+                {
+                    string fullPageHtml = $"<div class=\"fullpage-image\"><img src=\"../Images/{img.ImgFileName}\" alt=\"\"/></div>";
+                    Chapters.Add(new EpubChapterDraft($"Иллюстрация (стр. {img.PageNum})", fullPageHtml));
+                }
+                PendingFullPageImages.Clear();
+            }
+        }
+        private static bool IsInvisibleGlyph(Letter letter)
+        {
+            if (letter.RenderingMode == TextRenderingMode.Neither)
+                return true;
+
+            if (letter.Value == "." && letter.Color != null)
+            {
+                var rgb = letter.Color.ToRGBValues();
+                if (rgb.r > 0.96 && rgb.g > 0.96 && rgb.b > 0.96)
+                    return true;
+            }
+
+            return false;
+        }
+
         public bool CanHandle(string extension) =>
             extension.Equals(".pdf", StringComparison.OrdinalIgnoreCase);
 
@@ -53,276 +117,41 @@ namespace Epublisher.BookLoaders
             return await Task.Run(async () =>
             {
                 using var document = PdfDocument.Open(sourceStream);
-
                 string title = !string.IsNullOrWhiteSpace(document.Information.Title)
                     ? document.Information.Title
                     : Path.GetFileNameWithoutExtension(originalFileName);
-
                 string author = !string.IsNullOrWhiteSpace(document.Information.Author)
                     ? document.Information.Author
                     : "Unknown Author";
 
                 string detectedLang = DetectDocumentLanguage(document);
                 double bodyFontSize = DetectDominantFontSize(document);
-                HashSet<string> tocTitles = ExtractTocTitlesFromDocument(document);
-
-                byte[]? coverBytes = null;
-                string coverExt = ".png";
-                var extraImages = new Dictionary<string, byte[]>();
-
-                var chapters = new List<EpubChapterDraft>();
-                var currentChapterSb = new StringBuilder();
-                string currentChapterTitle = title;
-                bool hasContentInCurrentChapter = false;
-                bool currentChapterHasHeading = false;
-
-                var tocLineRegex = new Regex(@"^(.+?)\s*[\.·…_\-]{3,}\s*(\d+)\s*$");
-                int lastHeadingPageNum = -1;
+                var state = new PdfConversionState(title);
 
                 for (int pageNum = 1; pageNum <= document.NumberOfPages; pageNum++)
                 {
                     Page page = document.GetPage(pageNum);
-                    double pageWidth = page.Width;
-                    double pageHeight = page.Height;
-
-                    double topMarginY = pageHeight * 0.945;
-                    double bottomMarginY = pageHeight * 0.055;
-
-                    var pageElements = new List<PageLayoutElement>();
-
-                    int imgCounter = 1;
-                    var extractedImages = ExtractAllImagesFromPage(page, document);
-
-                    foreach (var img in extractedImages)
-                    {
-                        if (img.Width < 15 || img.Height < 15)
-                            continue;
-
-                        bool isFullPageSize = img.Width >= pageWidth * 0.55 || img.Height >= pageHeight * 0.55;
-
-                        if (pageNum <= 2 && coverBytes == null && isFullPageSize)
-                        {
-                            coverBytes = img.Bytes;
-                            coverExt = img.Extension;
-                            continue;
-                        }
-
-                        string imgFileName = $"img_p{pageNum}_{imgCounter++}{img.Extension}";
-                        extraImages[imgFileName] = img.Bytes;
-
-                        string imgHtml = isFullPageSize
-                            ? $"<div class=\"fullpage-image\"><img src=\"../Images/{imgFileName}\" alt=\"\"/></div>"
-                            : $"<div class=\"pdf-image\"><img src=\"../Images/{imgFileName}\" alt=\"\"/></div>";
-
-                        pageElements.Add(new PageLayoutElement
-                        {
-                            TopY = img.TopY,
-                            BottomY = img.BottomY,
-                            Html = imgHtml,
-                            IsFullPageImage = isFullPageSize
-                        });
-                    }
-
-                    var words = NearestNeighbourWordExtractor.Instance.GetWords(page.Letters);
-                    var blocks = RecursiveXYCut.Instance.GetBlocks(words);
-                    var orderedBlocks = UnsupervisedReadingOrderDetector.Instance.Get(blocks);
-
-                    bool hasFullPageImage = pageElements.Any(e => e.IsFullPageImage);
-                    int totalWordsOnPage = words.Count();
-
-                    if (hasFullPageImage && totalWordsOnPage < 15)
-                    {
-                        orderedBlocks = Array.Empty<TextBlock>();
-                    }
-
-                    foreach (var block in orderedBlocks)
-                    {
-                        if (block.BoundingBox.Bottom > topMarginY || block.BoundingBox.Top < bottomMarginY)
-                            continue;
-
-                        var blockLetters = block.TextLines.SelectMany(l => l.Words).SelectMany(w => w.Letters).ToList();
-                        if (blockLetters.Count == 0) continue;
-
-                        double avgFontSize = blockLetters.Average(l => l.PointSize);
-                        bool isBold = blockLetters.Count(l => l.FontName?.Contains("Bold", StringComparison.OrdinalIgnoreCase) == true)
-                                      > blockLetters.Count * 0.6;
-
-                        double blockCenter = (block.BoundingBox.Left + block.BoundingBox.Right) / 2.0;
-                        double pageCenter = pageWidth / 2.0;
-                        bool isCentered = Math.Abs(blockCenter - pageCenter) < pageWidth * 0.08 &&
-                                          block.BoundingBox.Width < pageWidth * 0.85;
-
-                        List<string> paragraphs = SplitBlockIntoParagraphs(block.TextLines, avgFontSize);
-
-                        for (int pIdx = 0; pIdx < paragraphs.Count; pIdx++)
-                        {
-                            string rawPara = paragraphs.ElementAt(pIdx);
-                            if (string.IsNullOrWhiteSpace(rawPara)) continue;
-
-                            if (pIdx + 1 < paragraphs.Count && !tocLineRegex.IsMatch(rawPara))
-                            {
-                                var nextTocMatch = tocLineRegex.Match(paragraphs.ElementAt(pIdx + 1));
-                                if (nextTocMatch.Success && rawPara.Length < 90)
-                                {
-                                    rawPara = $"{rawPara} {paragraphs.ElementAt(pIdx + 1)}";
-                                    pIdx++; 
-                                }
-                            }
-
-                            var tocMatch = tocLineRegex.Match(rawPara);
-                            if (tocMatch.Success)
-                            {
-                                string cleanTocTitle = tocMatch.Groups[1].Value.Trim();
-                                string encodedToc = WebUtility.HtmlEncode(cleanTocTitle);
-                                pageElements.Add(new PageLayoutElement
-                                {
-                                    FontSize = avgFontSize,
-                                    TopY = block.BoundingBox.Top,
-                                    BottomY = block.BoundingBox.Bottom,
-                                    Html = $"<p class=\"pdf-toc-entry\" data-toc-target=\"{encodedToc}\">{encodedToc}</p>"
-                                });
-                                continue;
-                            }
-
-                            bool matchesToc = tocTitles.Any(t =>
-                                t.Equals(rawPara, StringComparison.OrdinalIgnoreCase) ||
-                                (rawPara.Length >= 5 && t.StartsWith(rawPara, StringComparison.OrdinalIgnoreCase)));
-
-                            bool isLargeHeading = avgFontSize >= bodyFontSize * 1.25;
-                            bool isCenteredBoldHeading = isCentered && isBold && rawPara.Length <= 100 && !rawPara.EndsWith('.');
-
-                            bool isHeading = matchesToc || isLargeHeading || isCenteredBoldHeading;
-
-                            string encodedText = WebUtility.HtmlEncode(rawPara);
-                            string alignStyle = isCentered ? " style=\"text-align: center; text-indent: 0;\"" : string.Empty;
-
-                            string elementHtml;
-                            if (avgFontSize >= bodyFontSize * 1.45)
-                                elementHtml = $"<h1{alignStyle}>{encodedText}</h1>";
-                            else if (isHeading)
-                                elementHtml = $"<h2{alignStyle}>{encodedText}</h2>";
-                            else
-                                elementHtml = $"<p{alignStyle}>{encodedText}</p>";
-
-                            pageElements.Add(new PageLayoutElement
-                            {
-                                FontSize = avgFontSize,
-                                TopY = block.BoundingBox.Top,
-                                BottomY = block.BoundingBox.Bottom,
-                                Html = elementHtml,
-                                IsHeading = isHeading,
-                                ChapterTitleCandidate = isHeading ? rawPara : null
-                            });
-                        }
-                    }
-
-                    var sortedElements = pageElements.OrderByDescending(e => e.TopY).ToList();
-                    bool chapterStartedOnThisPage = false;
-
-                    for (int i = 0; i < sortedElements.Count; i++)
-                    {
-                        var el = sortedElements.ElementAt(i);
-                        if (el.IsFullPageImage)
-                        {
-                            if (hasContentInCurrentChapter && currentChapterSb.Length > 0)
-                            {
-                                chapters.Add(new EpubChapterDraft(currentChapterTitle, currentChapterSb.ToString()));
-                                currentChapterSb.Clear();
-                                hasContentInCurrentChapter = false;
-                            }
-
-                            chapters.Add(new EpubChapterDraft($"Иллюстрация (стр. {pageNum})", el.Html));
-                            chapterStartedOnThisPage = true;
-                            continue;
-                        }
-
-                        if (i + 1 < sortedElements.Count &&
-                            !el.Html.Contains("pdf-toc-entry") &&
-                            !el.Html.Contains("image") &&
-                            sortedElements.ElementAt(i + 1).Html.Contains("pdf-toc-entry"))
-                        {
-                            string firstPart = Regex.Replace(el.Html, "<[^>]+>", string.Empty).Trim();
-                            var nextEl = sortedElements.ElementAt(i + 1);
-
-                            var nextMatch = Regex.Match(nextEl.Html, @"data-toc-target=""([^""]+)"">(.*?)</p>");
-                            if (nextMatch.Success && firstPart.Length < 100)
-                            {
-                                string combinedTitle = $"{firstPart} {WebUtility.HtmlDecode(nextMatch.Groups[1].Value)}";
-                                string encodedCombined = WebUtility.HtmlEncode(combinedTitle);
-                                el = new PageLayoutElement
-                                {
-                                    TopY = el.TopY,
-                                    BottomY = nextEl.BottomY,
-                                    FontSize = el.FontSize,
-                                    Html = $"<p class=\"pdf-toc-entry\" data-toc-target=\"{encodedCombined}\">{encodedCombined}</p>"
-                                };
-                                i++;
-                            }
-                        }
-
-                        while (i + 1 < sortedElements.Count &&
-                               el.IsHeading &&
-                               sortedElements.ElementAt(i + 1).IsHeading)
-                        {
-                            var nextHeading = sortedElements.ElementAt(i + 1);
-                            string currentClean = Regex.Replace(el.Html, "<[^>]+>", string.Empty).Trim();
-                            string nextClean = Regex.Replace(nextHeading.Html, "<[^>]+>", string.Empty).Trim();
-
-                            bool sameFontSize = Math.Abs(el.FontSize - nextHeading.FontSize) < 0.5;
-                            bool closeVertically = (el.BottomY - nextHeading.TopY) < el.FontSize * 1.8;
-                            bool startsWithUpper = nextClean.Length > 0 && char.IsUpper(nextClean.First());
-
-                            if (currentClean.EndsWith('.') || !sameFontSize || !closeVertically || startsWithUpper)
-                                break;
-
-                            string mergedHeading = $"{currentClean} {nextClean}";
-                            string encodedMerged = WebUtility.HtmlEncode(mergedHeading);
-
-                            string tag = el.FontSize >= bodyFontSize * 1.45 ? "h1" : "h2";
-                            el = new PageLayoutElement
-                            {
-                                TopY = el.TopY,
-                                BottomY = nextHeading.BottomY,
-                                FontSize = el.FontSize,
-                                Html = $"<{tag} style=\"text-align: center; text-indent: 0;\">{encodedMerged}</{tag}>",
-                                IsHeading = true,
-                                ChapterTitleCandidate = mergedHeading
-                            };
-                            i++;
-                        }
-                        bool isDifferentPageFromLastHeading = pageNum != lastHeadingPageNum;
-                        if (el.IsHeading)
-                        {
-                            if (!chapterStartedOnThisPage && hasContentInCurrentChapter && currentChapterHasHeading && isDifferentPageFromLastHeading)
-                            {
-                                chapters.Add(new EpubChapterDraft(currentChapterTitle, currentChapterSb.ToString()));
-                                currentChapterSb.Clear();
-                                currentChapterTitle = el.ChapterTitleCandidate ?? $"Section {chapters.Count + 1}";
-                                hasContentInCurrentChapter = false;
-                                currentChapterHasHeading = false;
-                            }
-
-                            lastHeadingPageNum = pageNum;
-                            chapterStartedOnThisPage = true;
-                            currentChapterHasHeading = true;
-
-                            if (!hasContentInCurrentChapter)
-                            {
-                                currentChapterTitle = el.ChapterTitleCandidate ?? currentChapterTitle;
-                            }
-                        }
-                        currentChapterSb.AppendLine(el.Html);
-                        hasContentInCurrentChapter = true;
-                    }
+                    var rawElements = ExtractPageElements(page, document, pageNum, bodyFontSize, state);
+                    var mergedElements = MergeAdjacentElements(rawElements, bodyFontSize);
+                    AppendPageElementsToChapters(mergedElements, pageNum, state);
                 }
 
-                if (hasContentInCurrentChapter && currentChapterSb.Length > 0)
-                {
-                    chapters.Add(new EpubChapterDraft(currentChapterTitle, currentChapterSb.ToString()));
-                }
-                LinkTableOfContentsChapters(chapters);
+                state.FlushCurrentChapter();
+                state.FlushPendingImagesAsStandaloneChapters();
+                LinkTableOfContentsChapters(state.Chapters);
+
+                var additionStyles = """
+            .pdf-toc-entry {
+                text-indent: 0;
+                margin: 0.3em 0;
+            }
+
+            """+ CssHelper.FootnoteCss;
+
                 string? savedCoverPath = await EpubStructureWriter.WriteUnpackedEpubAsync(
-                targetBookFolder, bookId, title, author, detectedLang, chapters, coverBytes, coverExt, extraImages);
+                    targetBookFolder, bookId, title, author, detectedLang,
+                    state.Chapters, state.CoverBytes, state.CoverExt ?? ".png", state.ExtraImages, additionStyles);
+
                 return new RecentFile
                 {
                     Id = bookId,
@@ -336,73 +165,646 @@ namespace Epublisher.BookLoaders
                 };
             });
         }
-        private static List<string> SplitBlockIntoParagraphs(IReadOnlyList<TextLine> lines, double fontSize)
+        private static List<PageLayoutElement> ExtractPageElements(
+    Page page, PdfDocument document, int pageNum, double bodyFontSize, PdfConversionState state)
         {
-            var result = new List<string>();
-            if (lines.Count == 0) return result;
+            var elements = ExtractImagesFromPage(page, document, pageNum, state);
 
-            var orderedLines = lines.OrderByDescending(l => l.BoundingBox.Top).ToList();
-            double baseLeft = orderedLines.Min(l => l.BoundingBox.Left);
+            var lines = GroupWordsIntoTextLines(page, bodyFontSize, elements.Any(e => e.IsFullPageImage));
+            if (lines.Count == 0)
+                return elements.OrderByDescending(e => e.TopY).ToList();
 
-            var currentPara = new StringBuilder();
-            double? prevBottom = null;
+            var textElements = BuildTextElementsFromLines(lines, page.Width, bodyFontSize, out bool isTocPage);
+            if (isTocPage)
+                elements.RemoveAll(e => e.IsFullPageImage);
 
-            foreach (var line in orderedLines)
+            elements.AddRange(textElements);
+
+            var sortedElements = elements.OrderByDescending(e => e.TopY).ToList();
+            LinkPageFootnotes(sortedElements, pageNum, page.Height);
+            return sortedElements;
+        }
+        private static List<PageLayoutElement> ExtractImagesFromPage(
+    Page page, PdfDocument document, int pageNum, PdfConversionState state)
+        {
+            var elements = new List<PageLayoutElement>();
+            int imgCounter = 1;
+
+            foreach (var img in ExtractAllImagesFromPage(page, document))
             {
-                string lineText = string.Join(" ", line.Text.Split(default(char[]), StringSplitOptions.RemoveEmptyEntries));
-                if (string.IsNullOrEmpty(lineText)) continue;
+                if (img.Width < 15 || img.Height < 15) continue;
 
-                if (currentPara.Length == 0)
+                bool isFullPageSize = img.Width >= page.Width * 0.55 || img.Height >= page.Height * 0.55;
+                if (pageNum <= 2 && state.CoverBytes == null && isFullPageSize)
                 {
-                    currentPara.Append(lineText);
-                    prevBottom = line.BoundingBox.Bottom;
+                    state.CoverBytes = img.Bytes;
+                    state.CoverExt = img.Extension;
                     continue;
                 }
 
-                bool endsWithHyphen = currentPara[^1] == '-' || currentPara[^1] == '‐' || currentPara[^1] == '‑';
-                bool startsWithLower = char.IsLower(lineText.First());
+                string imgFileName = $"img_p{pageNum}_{imgCounter++}{img.Extension}";
+                state.ExtraImages[imgFileName] = img.Bytes;
 
-                if (endsWithHyphen && startsWithLower)
+                string imgHtml = isFullPageSize
+                    ? $"<div class=\"fullpage-image\"><img src=\"../Images/{imgFileName}\" alt=\"\"/></div>"
+                    : $"<div class=\"pdf-image\"><img src=\"../Images/{imgFileName}\" alt=\"\"/></div>";
+
+                elements.Add(new PageLayoutElement
                 {
-                    currentPara.Length--; 
-                    currentPara.Append(lineText); 
-                    prevBottom = line.BoundingBox.Bottom;
-                    continue;
-                }
+                    TopY = img.TopY,
+                    BottomY = img.BottomY,
+                    Html = imgHtml,
+                    IsFullPageImage = isFullPageSize,
+                    ImageFileName = imgFileName
+                });
+            }
 
-                bool isNewParagraph = false;
-                if (prevBottom.HasValue)
+            return elements;
+        }
+        private static List<TextLine> GroupWordsIntoTextLines(Page page, double bodyFontSize, bool hasFullPageImage)
+        {
+            double topMarginY = page.Height * 0.955;
+            double bottomMarginY = page.Height * 0.045;
+            double runningHeaderZoneY = page.Height * 0.935;
+
+            var visibleLetters = page.Letters.Where(l => !IsInvisibleGlyph(l)).ToList();
+            var words = NearestNeighbourWordExtractor.Instance.GetWords(visibleLetters)
+                .Where(w => w.BoundingBox.Bottom <= topMarginY && w.BoundingBox.Top >= bottomMarginY)
+                .OrderByDescending(w => w.Letters.First().StartBaseLine.Y)
+                .ThenBy(w => w.BoundingBox.Left)
+                .ToList();
+
+            if (hasFullPageImage && words.Count < 15)
+                return new List<TextLine>();
+
+            var buckets = new List<(double BaselineY, List<Word> Words)>();
+
+            foreach (var word in words)
+            {
+                double wordBaselineY = word.Letters.Average(l => l.StartBaseLine.Y);
+                double wordAvgSize = word.Letters.Average(l => l.PointSize);
+
+                int matchIdx = -1;
+                bool updateBaselineToWord = false;
+
+                for (int i = 0; i < buckets.Count; i++)
                 {
-                    double verticalGap = prevBottom.Value - line.BoundingBox.Top;
-                    bool hasIndent = (line.BoundingBox.Left - baseLeft) > fontSize * 1.1;
+                    double bucketAvgSize = buckets[i].Words.SelectMany(w => w.Letters).Average(l => l.PointSize);
+                    double diffY = wordBaselineY - buckets[i].BaselineY;
 
-                    if (verticalGap > fontSize * 0.85 || hasIndent)
+                    bool isSameBaseline = Math.Abs(diffY) <= bodyFontSize * 0.25;
+
+                    // Case A: bucket is normal text, incoming word is a raised/lowered superscript/subscript
+                    bool wordIsSupOrSub = wordAvgSize < bodyFontSize * 0.90 &&
+                                          diffY >= -bodyFontSize * 0.35 &&
+                                          diffY <= bodyFontSize * 0.75;
+
+                    // Case B: bucket was created first by a raised superscript (like '*'), incoming word is the normal line below it
+                    bool bucketIsSupOrSub = buckets[i].Words.Count == 1 &&
+                                            bucketAvgSize < bodyFontSize * 0.90 &&
+                                            diffY <= 0 &&
+                                            diffY >= -bodyFontSize * 0.75;
+
+                    if (isSameBaseline || wordIsSupOrSub || bucketIsSupOrSub)
                     {
-                        isNewParagraph = true;
+                        matchIdx = i;
+                        updateBaselineToWord = bucketIsSupOrSub && wordAvgSize >= bodyFontSize * 0.90;
+                        break;
                     }
                 }
 
-                if (isNewParagraph)
+                if (matchIdx >= 0)
                 {
-                    result.Add(currentPara.ToString().Trim());
-                    currentPara.Clear();
-                    currentPara.Append(lineText);
+                    buckets[matchIdx].Words.Add(word);
+                    if (updateBaselineToWord)
+                    {
+                        buckets[matchIdx] = (wordBaselineY, buckets[matchIdx].Words);
+                    }
                 }
                 else
                 {
-                    currentPara.Append(' ');
-                    currentPara.Append(lineText);
+                    buckets.Add((wordBaselineY, new List<Word> { word }));
+                }
+            }
+
+            return buckets
+                .OrderByDescending(b => b.BaselineY)
+                .Select(b => new TextLine(b.Words.OrderBy(w => w.BoundingBox.Left).ToList()))
+                .Where(line =>
+                {
+                    var letters = line.Words.SelectMany(w => w.Letters).ToList();
+                    string rawText = string.Concat(letters.Select(l => l.Value)).Trim();
+                    if (line.BoundingBox.Bottom > runningHeaderZoneY && letters.Count <= 60)
+                        return false;
+                    if (line.BoundingBox.Top < page.Height * 0.08 && Regex.IsMatch(rawText, @"^[\-\–\—\s]*\d{1,4}[\-\–\—\s]*$"))
+                        return false;
+                    return true;
+                })
+                .ToList();
+        }
+        private static List<PageLayoutElement> BuildTextElementsFromLines(
+    IReadOnlyList<TextLine> lines, double pageWidth, double bodyFontSize, out bool isTocPage)
+        {
+            var elements = new List<PageLayoutElement>();
+            var tocLineRegex = new Regex(@"^(.+?)\s*[\.·…_\-]{3,}\s*(\d+)\s*$");
+
+            double pageColumnWidth = lines.Max(l => l.BoundingBox.Width);
+            double pageColumnLeft = lines.Min(l => l.BoundingBox.Left);
+            double pageColumnCenter = pageColumnLeft + pageColumnWidth / 2.0;
+
+            var currentPlain = new StringBuilder();
+            var currentHtml = new StringBuilder();
+            var currentLetters = new List<Letter>();
+            double paraTopY = 0, paraBottomY = 0, paraLeftX = 0, paraRightX = 0;
+            double? prevBottom = null;
+
+            var rawParagraphs = new List<(ParsedParagraph Para, PageLayoutElement Meta)>();
+            int tocLineCount = 0;
+
+            void FlushParagraph()
+            {
+                if (currentPlain.Length == 0 || currentLetters.Count == 0) return;
+
+                string plain = currentPlain.ToString().Trim();
+                string html = currentHtml.ToString().Trim();
+                double avgFontSize = currentLetters.Average(l => l.PointSize);
+                bool isBold = currentLetters.Count(l => l.FontName?.Contains("Bold", StringComparison.OrdinalIgnoreCase) == true) > currentLetters.Count * 0.6;
+                double width = paraRightX - paraLeftX;
+                double center = paraLeftX + width / 2.0;
+                bool isCentered = paraLeftX > pageColumnLeft + pageColumnWidth * 0.15 &&
+                                  Math.Abs(center - pageColumnCenter) < pageColumnWidth * 0.08 &&
+                                  width < pageColumnWidth * 0.78;
+
+                if (tocLineRegex.IsMatch(plain))
+                    tocLineCount++;
+
+                rawParagraphs.Add((
+                    new ParsedParagraph(plain, html),
+                    new PageLayoutElement
+                    {
+                        FontSize = avgFontSize,
+                        TopY = paraTopY,
+                        BottomY = paraBottomY,
+                        LeftX = paraLeftX,
+                        RightX = paraRightX,
+                        IsHeading = isBold,
+                        ChapterTitleCandidate = isCentered ? "centered" : null
+                    }));
+
+                currentPlain.Clear();
+                currentHtml.Clear();
+                currentLetters.Clear();
+                prevBottom = null;
+            }
+
+            foreach (var line in lines)
+            {
+                var lineLetters = line.Words.SelectMany(w => w.Letters).ToList();
+                if (lineLetters.Count == 0) continue;
+
+                double lineFontSize = lineLetters.Average(l => l.PointSize);
+                var parsedLine = BuildLineWithSubSup(line.Words, lineFontSize);
+                if (string.IsNullOrWhiteSpace(parsedLine.PlainText)) continue;
+
+                if (currentPlain.Length == 0)
+                {
+                    currentPlain.Append(parsedLine.PlainText);
+                    currentHtml.Append(parsedLine.HtmlText);
+                    currentLetters.AddRange(lineLetters);
+                    paraTopY = line.BoundingBox.Top;
+                    paraBottomY = line.BoundingBox.Bottom;
+                    paraLeftX = line.BoundingBox.Left;
+                    paraRightX = line.BoundingBox.Right;
+                    prevBottom = line.BoundingBox.Bottom;
+                    continue;
+                }
+
+                string currentSoFar = currentPlain.ToString().TrimEnd();
+                bool prevEndedToc = Regex.IsMatch(currentSoFar, @"[\.·…_\-]{2,}\s*\d+$");
+                bool endsWithHyphen = currentPlain[^1] == '-' || currentPlain[^1] == '‐' || currentPlain[^1] == '‑';
+                bool startsWithLower = char.IsLower(parsedLine.PlainText, 0);
+
+                if (!prevEndedToc && endsWithHyphen && startsWithLower)
+                {
+                    currentPlain.Length--;
+                    currentPlain.Append(parsedLine.PlainText);
+                    if (currentHtml.Length > 0 && (currentHtml[^1] == '-' || currentHtml[^1] == '‐' || currentHtml[^1] == '‑'))
+                        currentHtml.Length--;
+                    currentHtml.Append(parsedLine.HtmlText);
+                    currentLetters.AddRange(lineLetters);
+                    paraBottomY = line.BoundingBox.Bottom;
+                    paraLeftX = Math.Min(paraLeftX, line.BoundingBox.Left);
+                    paraRightX = Math.Max(paraRightX, line.BoundingBox.Right);
+                    prevBottom = line.BoundingBox.Bottom;
+                    continue;
+                }
+
+                double verticalGap = prevBottom!.Value - line.BoundingBox.Top;
+                bool hasIndent = (line.BoundingBox.Left - pageColumnLeft) > lineFontSize * 1.1;
+                bool fontSizeChanged = Math.Abs(lineFontSize - currentLetters.Average(l => l.PointSize)) > 0.6;
+                bool wasCenteredNowLeft = paraLeftX > pageColumnLeft + pageColumnWidth * 0.15 &&
+                                          line.BoundingBox.Left <= pageColumnLeft + lineFontSize * 0.5;
+                bool isLineBold = lineLetters.Count(l => l.FontName?.Contains("Bold", StringComparison.OrdinalIgnoreCase) == true) > lineLetters.Count * 0.6;
+                bool currentIsBold = currentLetters.Count(l => l.FontName?.Contains("Bold", StringComparison.OrdinalIgnoreCase) == true) > currentLetters.Count * 0.6;
+                bool boldChanged = isLineBold != currentIsBold;
+
+                if (prevEndedToc || verticalGap > lineFontSize * 0.85 || hasIndent || fontSizeChanged || wasCenteredNowLeft || boldChanged)
+                {
+                    FlushParagraph();
+                    currentPlain.Append(parsedLine.PlainText);
+                    currentHtml.Append(parsedLine.HtmlText);
+                    currentLetters.AddRange(lineLetters);
+                    paraTopY = line.BoundingBox.Top;
+                    paraBottomY = line.BoundingBox.Bottom;
+                    paraLeftX = line.BoundingBox.Left;
+                    paraRightX = line.BoundingBox.Right;
+                }
+                else
+                {
+                    currentPlain.Append(' ');
+                    currentPlain.Append(parsedLine.PlainText);
+                    currentHtml.Append(' ');
+                    currentHtml.Append(parsedLine.HtmlText);
+                    currentLetters.AddRange(lineLetters);
+                    paraBottomY = line.BoundingBox.Bottom;
+                    paraLeftX = Math.Min(paraLeftX, line.BoundingBox.Left);
+                    paraRightX = Math.Max(paraRightX, line.BoundingBox.Right);
                 }
 
                 prevBottom = line.BoundingBox.Bottom;
             }
 
-            if (currentPara.Length > 0)
+            FlushParagraph();
+            isTocPage = tocLineCount >= 2;
+            int firstTocIndex = rawParagraphs.FindIndex(p => tocLineRegex.IsMatch(p.Para.PlainText));
+
+            for (int i = 0; i < rawParagraphs.Count; i++)
             {
-                result.Add(currentPara.ToString().Trim());
+                var (para, meta) = rawParagraphs[i];
+                double bottomY = meta.BottomY;
+                bool isTocTitle = isTocPage && firstTocIndex > 0 && i < firstTocIndex;
+
+                if (!isTocTitle && i + 1 < rawParagraphs.Count && !tocLineRegex.IsMatch(para.PlainText))
+                {
+                    var (nextPara, nextMeta) = rawParagraphs[i + 1];
+                    if (tocLineRegex.IsMatch(nextPara.PlainText) && para.PlainText.Length < 100)
+                    {
+                        para = new ParsedParagraph(
+                            $"{para.PlainText} {nextPara.PlainText}",
+                            $"{para.HtmlText} {nextPara.HtmlText}");
+                        bottomY = nextMeta.BottomY;
+                        i++;
+                    }
+                }
+
+                var tocMatch = tocLineRegex.Match(para.PlainText);
+                if (tocMatch.Success)
+                {
+                    string encodedToc = WebUtility.HtmlEncode(tocMatch.Groups[1].Value.Trim());
+                    elements.Add(new PageLayoutElement
+                    {
+                        FontSize = meta.FontSize,
+                        TopY = meta.TopY,
+                        BottomY = bottomY,
+                        LeftX = meta.LeftX,
+                        RightX = meta.RightX,
+                        Html = $"<p class=\"pdf-toc-entry\" data-toc-target=\"{encodedToc}\">{encodedToc}</p>"
+                    });
+                    continue;
+                }
+
+                bool isBold = meta.IsHeading;
+                bool isCentered = meta.ChapterTitleCandidate == "centered";
+                bool isLargeH1 = meta.FontSize >= bodyFontSize * 1.45;
+                bool isLargeH2 = meta.FontSize >= bodyFontSize * 1.22;
+                bool isCenteredBoldHeading = isCentered && isBold && para.PlainText.Length <= 100 && !para.PlainText.EndsWith('.');
+                bool isHeading = isTocPage
+                    ? (isTocTitle || isLargeH1 || isLargeH2)
+                    : (isLargeH1 || isLargeH2 || isCenteredBoldHeading);
+
+                string elementHtml = isLargeH1
+                    ? $"<h1>{para.HtmlText}</h1>"
+                    : isHeading
+                        ? $"<h2>{para.HtmlText}</h2>"
+                        : $"<p{(isCentered ? " style=\"text-align: center; text-indent: 0;\"" : string.Empty)}>{para.HtmlText}</p>";
+
+                elements.Add(new PageLayoutElement
+                {
+                    FontSize = meta.FontSize,
+                    TopY = meta.TopY,
+                    BottomY = bottomY,
+                    LeftX = meta.LeftX,
+                    RightX = meta.RightX,
+                    Html = elementHtml,
+                    IsHeading = isHeading,
+                    ChapterTitleCandidate = isHeading ? para.PlainText : null
+                });
+            }
+
+            return elements;
+        }
+
+        private static List<PageLayoutElement> MergeAdjacentElements(List<PageLayoutElement> sortedElements, double bodyFontSize)
+        {
+            var result = new List<PageLayoutElement>();
+
+            for (int i = 0; i < sortedElements.Count; i++)
+            {
+                var el = sortedElements[i];
+
+                if (i + 1 < sortedElements.Count &&
+                    !el.IsHeading &&
+                    !el.Html.Contains("pdf-toc-entry") &&
+                    !el.Html.Contains("image") &&
+                    sortedElements[i + 1].Html.Contains("pdf-toc-entry"))
+                {
+                    var nextEl = sortedElements[i + 1];
+                    string firstPart = Regex.Replace(el.Html, "<[^>]+>", string.Empty).Trim();
+                    bool sameFontSize = Math.Abs(el.FontSize - nextEl.FontSize) < 0.5;
+                    bool closeVertically = (el.BottomY - nextEl.TopY) < el.FontSize * 1.5;
+
+                    var nextMatch = Regex.Match(nextEl.Html, @"data-toc-target=""([^""]+)"">(.*?)</p>");
+                    if (sameFontSize && closeVertically && nextMatch.Success && firstPart.Length < 120)
+                    {
+                        string encodedCombined = WebUtility.HtmlEncode($"{firstPart} {WebUtility.HtmlDecode(nextMatch.Groups[1].Value)}");
+                        el = new PageLayoutElement
+                        {
+                            TopY = el.TopY,
+                            BottomY = nextEl.BottomY,
+                            FontSize = el.FontSize,
+                            Html = $"<p class=\"pdf-toc-entry\" data-toc-target=\"{encodedCombined}\">{encodedCombined}</p>"
+                        };
+                        i++;
+                    }
+                }
+
+                result.Add(el);
             }
 
             return result;
+        }
+
+        private static void AppendPageElementsToChapters(
+    List<PageLayoutElement> elements, int pageNum, PdfConversionState state)
+        {
+            bool chapterStartedOnThisPage = false;
+
+            foreach (var el in elements)
+            {
+                if (el.IsFullPageImage && !string.IsNullOrEmpty(el.ImageFileName))
+                {
+                    state.PendingFullPageImages.Add((pageNum, el.ImageFileName));
+                    continue;
+                }
+
+                bool isDifferentPageFromLastHeading = pageNum != state.LastHeadingPageNum;
+
+                if (el.IsHeading)
+                {
+                    if (!chapterStartedOnThisPage && state.HasContentInCurrentChapter && state.CurrentChapterHasHeading && isDifferentPageFromLastHeading)
+                    {
+                        state.FlushCurrentChapter();
+                        state.CurrentChapterTitle = el.ChapterTitleCandidate ?? $"Section {state.Chapters.Count + 1}";
+                        state.IsCollectingChapterTitle = true;
+                    }
+
+                    if (state.PendingFullPageImages.Count > 0)
+                    {
+                        state.FlushCurrentChapter();
+                        state.FlushPendingImagesAsStandaloneChapters();
+                    }
+
+                    if (!state.HasContentInCurrentChapter)
+                    {
+                        state.CurrentChapterTitle = el.ChapterTitleCandidate ?? state.CurrentChapterTitle;
+                        state.IsCollectingChapterTitle = true;
+                    }
+                    else if (state.IsCollectingChapterTitle && !string.IsNullOrWhiteSpace(el.ChapterTitleCandidate))
+                    {
+                        state.CurrentChapterTitle = $"{state.CurrentChapterTitle} {el.ChapterTitleCandidate}";
+                    }
+
+                    state.LastHeadingPageNum = pageNum;
+                    chapterStartedOnThisPage = true;
+                    state.CurrentChapterHasHeading = true;
+                }
+                else
+                {
+                    state.IsCollectingChapterTitle = false;
+
+                    if (state.PendingFullPageImages.Count > 0)
+                    {
+                        if (!state.HasContentInCurrentChapter)
+                        {
+                            state.FlushPendingImagesAsStandaloneChapters();
+                        }
+                        else
+                        {
+                            foreach (var pendingImg in state.PendingFullPageImages)
+                            {
+                                // Keep fullpage-image class when the image shares the same page as title/front-matter text;
+                                // use pdf-image when a dedicated illustration page sits mid-chapter
+                                string imgDivClass = pendingImg.PageNum == pageNum ? "fullpage-image" : "pdf-image";
+                                state.CurrentChapterSb.AppendLine($"<div class=\"{imgDivClass}\"><img src=\"../Images/{pendingImg.ImgFileName}\" alt=\"\"/></div>");
+                            }
+                            state.PendingFullPageImages.Clear();
+                        }
+                    }
+
+                    // Join hyphenated or incomplete paragraphs split across page boundaries
+                    if (!el.IsFullPageImage &&
+                        !el.Html.Contains("pdf-toc-entry") &&
+                        !el.Html.Contains("class=\"footnote\"") &&
+                        el.Html.StartsWith("<p>", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string currentChapterText = state.CurrentChapterSb.ToString().TrimEnd();
+                        var lastParaMatch = Regex.Match(currentChapterText, @"<p>([\s\S]*?)</p>\s*$");
+                        var newParaMatch = Regex.Match(el.Html.Trim(), @"^<p>([\s\S]*?)</p>$");
+
+                        if (lastParaMatch.Success && newParaMatch.Success)
+                        {
+                            string prevInner = lastParaMatch.Groups[1].Value.TrimEnd();
+                            string nextInner = newParaMatch.Groups[1].Value.TrimStart();
+                            string nextPlain = Regex.Replace(nextInner, "<[^>]+>", string.Empty).TrimStart();
+
+                            bool startsLower = nextPlain.Length > 0 && char.IsLower(nextPlain, 0);
+                            bool endsHyphen = prevInner.EndsWith('-') || prevInner.EndsWith('‐') || prevInner.EndsWith('‑');
+                            bool endsNoTerminalPunct = prevInner.Length > 0 && !Regex.IsMatch(prevInner, @"[.!?:;»”\…\]]$");
+
+                            if (startsLower && (endsHyphen || endsNoTerminalPunct))
+                            {
+                                string joinedInner = endsHyphen
+                                    ? $"{prevInner[..^1]}{nextInner}"
+                                    : $"{prevInner} {nextInner}";
+
+                                string updatedPrev = currentChapterText[..lastParaMatch.Index] + $"<p>{joinedInner}</p>";
+                                state.CurrentChapterSb.Clear();
+                                state.CurrentChapterSb.AppendLine(updatedPrev);
+                                state.HasContentInCurrentChapter = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                state.CurrentChapterSb.AppendLine(el.Html);
+                state.HasContentInCurrentChapter = true;
+            }
+        }
+
+        private static void LinkPageFootnotes(List<PageLayoutElement> sortedElements, int pageNum, double pageHeight)
+        {
+            double footnoteZoneTopY = pageHeight * 0.30;
+            int footnoteCounter = 1;
+            var footnoteDefs = new List<(PageLayoutElement Element, string Symbol)>();
+
+            foreach (var el in sortedElements)
+            {
+                if (el.IsFullPageImage || el.IsHeading || el.BottomY > footnoteZoneTopY)
+                    continue;
+
+                var startMarkerMatch = Regex.Match(
+                    el.Html,
+                    @"^<p[^>]*>\s*(?:<sup>([^<]{1,6})</sup>|([\*†‡§]+|\d{1,3}))\s+",
+                    RegexOptions.IgnoreCase);
+
+                if (startMarkerMatch.Success)
+                {
+                    string rawSymbol = startMarkerMatch.Groups[1].Success
+                        ? startMarkerMatch.Groups[1].Value
+                        : startMarkerMatch.Groups[2].Value;
+                    string symbol = WebUtility.HtmlDecode(rawSymbol).Trim();
+
+                    if (!string.IsNullOrEmpty(symbol))
+                    {
+                        footnoteDefs.Add((el, symbol));
+                    }
+                }
+            }
+
+            if (footnoteDefs.Count == 0) return;
+
+            foreach (var (defEl, symbol) in footnoteDefs)
+            {
+                string encodedSymbol = WebUtility.HtmlEncode(symbol);
+                string targetPattern = $@"<sup>{Regex.Escape(encodedSymbol)}</sup>";
+
+                PageLayoutElement? refEl = sortedElements.FirstOrDefault(e =>
+                    e != defEl &&
+                    !e.IsFullPageImage &&
+                    e.BottomY > defEl.TopY &&
+                    Regex.IsMatch(e.Html, targetPattern));
+
+                string fnId = $"fn-p{pageNum}-{footnoteCounter}";
+                string refId = $"fnref-p{pageNum}-{footnoteCounter}";
+                footnoteCounter++;
+
+                string bodyInside = Regex.Replace(defEl.Html, @"^<p[^>]*>|</p>$", string.Empty, RegexOptions.IgnoreCase).Trim();
+                bodyInside = Regex.Replace(
+                    bodyInside,
+                    @"^(?:<sup>[^<]+</sup>|[\*†‡§]+|\d{1,3})\s+",
+                    $"<sup>{encodedSymbol}</sup> ");
+
+                if (refEl != null)
+                {
+                    var regex = new Regex(targetPattern);
+                    refEl.Html = regex.Replace(
+                        refEl.Html,
+                        $"<sup><a id=\"{refId}\" href=\"#{fnId}\">{encodedSymbol}</a></sup>",
+                        count: 1);
+
+                    defEl.Html = $"<p id=\"{fnId}\" class=\"footnote\">{bodyInside} <a href=\"#{refId}\">&#8617;</a></p>";
+                }
+                else
+                {
+                    defEl.Html = $"<p id=\"{fnId}\" class=\"footnote\">{bodyInside}</p>";
+                }
+            }
+
+            var lastFootnote = footnoteDefs[footnoteDefs.Count - 1].Element;
+            lastFootnote.Html += "\n<div class=\"epub-page-break\"></div>";
+        }
+
+        private static ParsedParagraph BuildLineWithSubSup(IReadOnlyList<Word> words, double fallbackFontSize)
+        {
+            var sortedLetters = words
+                .SelectMany(w => w.Letters)
+                .Where(l => !IsInvisibleGlyph(l))
+                .OrderBy(l => l.StartBaseLine.X)
+                .ToList();
+
+            if (sortedLetters.Count == 0)
+                return new ParsedParagraph(string.Empty, string.Empty);
+
+            var orderedSizes = sortedLetters.Select(l => l.PointSize).OrderBy(s => s).ToList();
+            double normalSize = orderedSizes.Count > 0 ? orderedSizes[orderedSizes.Count / 2] : fallbackFontSize;
+
+            var normalLetters = sortedLetters
+                .Where(l => Math.Abs(l.PointSize - normalSize) <= normalSize * 0.12)
+                .ToList();
+
+            double normalBaseline = normalLetters.Count > 0
+                ? normalLetters.Select(l => l.StartBaseLine.Y).OrderBy(y => y).ElementAt(normalLetters.Count / 2)
+                : sortedLetters.First().StartBaseLine.Y;
+
+            var plainSb = new StringBuilder();
+            var htmlSb = new StringBuilder();
+            string activeTag = string.Empty;
+            Letter? prevLetter = null;
+
+            foreach (var letter in sortedLetters)
+            {
+                bool isPunctuation = letter.Value is "." or "," or "!" or "?" or ":" or ";" or "»" or ")" or "]";
+
+                if (prevLetter != null && !isPunctuation)
+                {
+                    double gap = letter.StartBaseLine.X - prevLetter.EndBaseLine.X;
+                    if (gap > normalSize * 0.08)
+                    {
+                        if (!string.IsNullOrEmpty(activeTag))
+                        {
+                            htmlSb.Append($"</{activeTag}>");
+                            activeTag = string.Empty;
+                        }
+                        plainSb.Append(' ');
+                        htmlSb.Append(' ');
+                    }
+                }
+
+                double deltaY = letter.StartBaseLine.Y - normalBaseline;
+                bool isSmallerFont = letter.PointSize < normalSize * 0.88;
+
+                string targetTag = string.Empty;
+                if (isSmallerFont && deltaY > normalSize * 0.14)
+                    targetTag = "sup";
+                else if (isSmallerFont && deltaY < -normalSize * 0.10)
+                    targetTag = "sub";
+
+                if (targetTag != activeTag)
+                {
+                    if (!string.IsNullOrEmpty(activeTag))
+                        htmlSb.Append($"</{activeTag}>");
+                    if (!string.IsNullOrEmpty(targetTag))
+                        htmlSb.Append($"<{targetTag}>");
+
+                    activeTag = targetTag;
+                }
+
+                string cleanChar = WebUtility.HtmlDecode(letter.Value);
+                plainSb.Append(cleanChar);
+                htmlSb.Append(WebUtility.HtmlEncode(cleanChar));
+                prevLetter = letter;
+            }
+
+            if (!string.IsNullOrEmpty(activeTag))
+            {
+                htmlSb.Append($"</{activeTag}>");
+            }
+
+            string cleanPlain = string.Join(" ", plainSb.ToString().Split(default(char[]), StringSplitOptions.RemoveEmptyEntries));
+            string cleanHtml = string.Join(" ", htmlSb.ToString().Split(default(char[]), StringSplitOptions.RemoveEmptyEntries));
+
+            return new ParsedParagraph(cleanPlain.Trim(), cleanHtml.Trim());
         }
         private static string DetectDocumentLanguage(PdfDocument doc)
         {
@@ -477,94 +879,95 @@ namespace Epublisher.BookLoaders
                 ? sizes.OrderByDescending(kv => kv.Value).First().Key
                 : 11.0;
         }
-        private static HashSet<string> ExtractTocTitlesFromDocument(PdfDocument doc)
-        {
-            var titles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var tocLineRegex = new Regex(@"^(.+?)\s*[\.·…_\-]{3,}\s*(\d+)\s*$");
-
-            int pagesToCheck = Math.Min(doc.NumberOfPages, 20);
-            for (int i = 1; i <= pagesToCheck; i++)
-            {
-                var page = doc.GetPage(i);
-                var words = NearestNeighbourWordExtractor.Instance.GetWords(page.Letters);
-                var blocks = RecursiveXYCut.Instance.GetBlocks(words);
-
-                var orderedLines = blocks
-                    .SelectMany(b => b.TextLines)
-                    .OrderByDescending(l => l.BoundingBox.Top)
-                    .Select(l => string.Join(" ", l.Text.Split(default(char[]), StringSplitOptions.RemoveEmptyEntries)))
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .ToList();
-
-                for (int lineIdx = 0; lineIdx < orderedLines.Count; lineIdx++)
-                {
-                    string currentLine = orderedLines.ElementAt(lineIdx);
-                    var match = tocLineRegex.Match(currentLine);
-
-                    if (match.Success)
-                    {
-                        string title = match.Groups[1].Value.Trim();
-                        if (lineIdx > 0)
-                        {
-                            string prevLine = orderedLines.ElementAt(lineIdx - 1);
-                            bool prevIsNotToc = !tocLineRegex.IsMatch(prevLine);
-                            bool prevIsShortEnough = prevLine.Length is >= 3 and < 100;
-                            bool prevIsNotHeader = !prevLine.Equals("Оглавление", StringComparison.OrdinalIgnoreCase) &&
-                                                   !prevLine.Equals("Contents", StringComparison.OrdinalIgnoreCase);
-
-                            if (prevIsNotToc && prevIsShortEnough && prevIsNotHeader)
-                            {
-                                title = $"{prevLine} {title}";
-                            }
-                        }
-
-                        if (title.Length >= 2)
-                        {
-                            titles.Add(title);
-                        }
-                    }
-                }
-            }
-            return titles;
-        }
-
         private static void LinkTableOfContentsChapters(List<EpubChapterDraft> chapters)
         {
-            static string NormalizeForMatch(string s) =>
-                Regex.Replace(s, @"[\p{P}\s]+", string.Empty).Trim();
+            var tocEntryRegex = new Regex(
+                @"<p\s+class=""pdf-toc-entry""\s+data-toc-target=""([^""]+)"">([\s\S]*?)</p>",
+                RegexOptions.IgnoreCase);
 
-            for (int tocIdx = 0; tocIdx < chapters.Count; tocIdx++)
+            static string NormalizeAlphaNumeric(string text)
             {
-                if (!chapters.ElementAt(tocIdx).HtmlBodyContent.Contains("pdf-toc-entry"))
+                string noTags = Regex.Replace(text, "<[^>]+>", " ");
+                string decoded = WebUtility.HtmlDecode(noTags);
+                return Regex.Replace(decoded, @"[^\p{L}\p{N}]", string.Empty).ToLowerInvariant();
+            }
+
+            for (int cIdx = 0; cIdx < chapters.Count; cIdx++)
+            {
+                var chapter = chapters[cIdx];
+                if (!chapter.HtmlBodyContent.Contains("pdf-toc-entry", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                string updatedHtml = Regex.Replace(
-                    chapters.ElementAt(tocIdx).HtmlBodyContent,
-                    @"<p class=""pdf-toc-entry"" data-toc-target=""([^""]+)"">(.*?)</p>",
-                    m =>
-                    {
-                        string rawTarget = WebUtility.HtmlDecode(m.Groups[1].Value);
-                        string displayHtml = m.Groups[2].Value;
-                        string normTarget = NormalizeForMatch(rawTarget);
-                        int foundChapterIndex = chapters.FindIndex(c =>
-                        {
-                            string normChapter = NormalizeForMatch(c.Title);
-                            return normChapter.Equals(normTarget, StringComparison.OrdinalIgnoreCase) ||
-                                   (normTarget.Length >= 5 && normChapter.StartsWith(normTarget, StringComparison.OrdinalIgnoreCase)) ||
-                                   (normChapter.Length >= 5 && normTarget.StartsWith(normChapter, StringComparison.OrdinalIgnoreCase));
-                        });
-                        if (foundChapterIndex >= 0)
-                        {
-                            string chapterFile = $"ch{foundChapterIndex + 1:D3}.xhtml";
-                            return $"<p style=\"text-indent: 0; margin: 6px 0;\"><a href=\"{chapterFile}\">{displayHtml}</a></p>";
-                        }
-                        return $"<p style=\"text-indent: 0; margin: 6px 0;\">{displayHtml}</p>";
-                    });
+                var matches = tocEntryRegex.Matches(chapter.HtmlBodyContent);
+                if (matches.Count == 0) continue;
 
-                chapters[tocIdx] = chapters.ElementAt(tocIdx) with { HtmlBodyContent = updatedHtml };
+                var listItemsSb = new StringBuilder();
+                listItemsSb.AppendLine("<nav epub:type=\"toc\">");
+                listItemsSb.AppendLine("  <ol style=\"list-style: none;\">");
+
+                foreach (Match match in matches)
+                {
+                    string rawTarget = WebUtility.HtmlDecode(match.Groups[1].Value).Trim();
+                    string cleanDisplay = Regex.Replace(match.Groups[2].Value, "<[^>]+>", string.Empty).Trim();
+                    string normTarget = NormalizeAlphaNumeric(rawTarget);
+
+                    int matchedChapterIdx = -1;
+                    if (!string.IsNullOrEmpty(normTarget))
+                    {
+                        for (int i = 0; i < chapters.Count; i++)
+                        {
+                            if (i == cIdx) continue;
+                            string normChapTitle = NormalizeAlphaNumeric(chapters[i].Title);
+                            if (string.IsNullOrEmpty(normChapTitle)) continue;
+
+                            bool exact = normChapTitle == normTarget;
+                            bool prefixMatch = false;
+
+                            if (!exact && Math.Min(normChapTitle.Length, normTarget.Length) >= 4)
+                            {
+                                if (normChapTitle.StartsWith(normTarget, StringComparison.Ordinal))
+                                {
+                                    // Ensure the next character isn't a digit (so "глава1" doesn't match "глава10")
+                                    char nextChar = normChapTitle[normTarget.Length];
+                                    prefixMatch = !char.IsDigit(nextChar);
+                                }
+                                else if (normTarget.StartsWith(normChapTitle, StringComparison.Ordinal))
+                                {
+                                    char nextChar = normTarget[normChapTitle.Length];
+                                    prefixMatch = !char.IsDigit(nextChar);
+                                }
+                            }
+
+                            if (exact || prefixMatch)
+                            {
+                                matchedChapterIdx = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    string encodedDisplay = WebUtility.HtmlEncode(cleanDisplay);
+                    if (matchedChapterIdx >= 0)
+                    {
+                        string targetFile = !string.IsNullOrWhiteSpace(chapters[matchedChapterIdx].CustomFileName)
+                            ? chapters[matchedChapterIdx].CustomFileName!
+                            : $"ch{matchedChapterIdx + 1:D3}.xhtml";
+
+                        listItemsSb.AppendLine($"    <li style=\"margin: 0.35em 0;\"><a href=\"{targetFile}\">{encodedDisplay}</a></li>");
+                    }
+                    else
+                    {
+                        listItemsSb.AppendLine($"    <li style=\"margin: 0.35em 0;\">{encodedDisplay}</li>");
+                    }
+                }
+
+                listItemsSb.AppendLine("  </ol>");
+                listItemsSb.AppendLine("</nav>");
+
+                string withoutOldEntries = tocEntryRegex.Replace(chapter.HtmlBodyContent, string.Empty).Trim();
+                chapters[cIdx] = new EpubChapterDraft(chapter.Title, $"{withoutOldEntries}\n{listItemsSb}".Trim(), "toc_page.xhtml");
             }
         }
-
 
         private static List<ExtractedPdfImage> ExtractAllImagesFromPage(Page page, PdfDocument doc)
         {

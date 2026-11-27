@@ -92,6 +92,10 @@
     "Settings.TemplateNamePlaceholder": "Style name (e.g., Highlighted Quote)",
     "Settings.CssCodePlaceholder": "CSS code...",
     "Settings.AddTemplateButton": "+ Add template",
+    "Settings.SaveButton": "Save",
+    "Settings.CancelButton": "Cancel",
+    "Settings.EditTooltip": "Edit",
+    "Settings.DeleteTooltip": "Delete",
     "Theme.System": "System",
     "Theme.Dark": "Dark",
     "Theme.Light": "Light"

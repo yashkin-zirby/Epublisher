@@ -2,6 +2,7 @@
 using CommunityToolkit.Mvvm.Input;
 using Epublisher.DataEntities;
 using Epublisher.Services;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -25,13 +26,21 @@ public partial class SettingsViewModel : ViewModelBase
     public ObservableCollection<CustomHtmlRule> HtmlRules { get; } = new(App.Services.CustomHtmlRules.Rules);
     public ObservableCollection<CustomCssTemplate> CssTemplates { get; } = new(App.Services.CustomCssTemplates.Templates);
 
+    [ObservableProperty] private string? _editingHtmlRuleId;
     [ObservableProperty] private string _newHtmlRuleName = string.Empty;
     [ObservableProperty] private string _newHtmlOpenTag = string.Empty;
     [ObservableProperty] private string _newHtmlCloseTag = string.Empty;
     [ObservableProperty] private string _newHtmlAssociatedCss = string.Empty;
 
+    public bool IsEditingHtmlRule => !string.IsNullOrEmpty(EditingHtmlRuleId);
+    partial void OnEditingHtmlRuleIdChanged(string? value) => OnPropertyChanged(nameof(IsEditingHtmlRule));
+
+    [ObservableProperty] private string? _editingCssTemplateId;
     [ObservableProperty] private string _newCssTemplateName = string.Empty;
     [ObservableProperty] private string _newCssTemplateCode = string.Empty;
+
+    public bool IsEditingCssTemplate => !string.IsNullOrEmpty(EditingCssTemplateId);
+    partial void OnEditingCssTemplateIdChanged(string? value) => OnPropertyChanged(nameof(IsEditingCssTemplate));
 
     public List<KeyValuePair<string, string>> LanguagesList { get; }
 
@@ -197,6 +206,101 @@ public partial class SettingsViewModel : ViewModelBase
         }
     }
     [RelayCommand]
+    private void BeginEditHtmlRule(CustomHtmlRule? rule)
+    {
+        if (rule == null) return;
+        EditingHtmlRuleId = rule.Id;
+        NewHtmlRuleName = rule.Name;
+        NewHtmlOpenTag = rule.OpenTag;
+        NewHtmlCloseTag = rule.CloseTag;
+        NewHtmlAssociatedCss = rule.AssociatedCss;
+    }
+
+    [RelayCommand]
+    private void CancelEditHtmlRule()
+    {
+        EditingHtmlRuleId = null;
+        NewHtmlRuleName = NewHtmlOpenTag = NewHtmlCloseTag = NewHtmlAssociatedCss = string.Empty;
+    }
+
+    [RelayCommand]
+    private async Task SaveHtmlRuleAsync()
+    {
+        if (string.IsNullOrWhiteSpace(NewHtmlRuleName) || string.IsNullOrWhiteSpace(NewHtmlOpenTag))
+            return;
+
+        var rule = new CustomHtmlRule
+        {
+            Id = EditingHtmlRuleId ?? Guid.NewGuid().ToString("N"),
+            Name = NewHtmlRuleName.Trim(),
+            OpenTag = NewHtmlOpenTag.Trim(),
+            CloseTag = NewHtmlCloseTag.Trim(),
+            AssociatedCss = NewHtmlAssociatedCss.Trim()
+        };
+
+        await App.Services.CustomHtmlRules.AddOrUpdateAsync(rule);
+
+        int existingIdx = -1;
+        for (int i = 0; i < HtmlRules.Count; i++)
+        {
+            if (HtmlRules[i].Id == rule.Id)
+            {
+                existingIdx = i;
+                break;
+            }
+        }
+
+        if (existingIdx >= 0)
+            HtmlRules[existingIdx] = rule;
+        else
+            HtmlRules.Add(rule);
+
+        if (!string.IsNullOrWhiteSpace(rule.AssociatedCss))
+        {
+            string className = ExtractCssClassName(rule.AssociatedCss, rule.Name);
+            var existingTpl = CssTemplates.FirstOrDefault(t =>
+                t.Name.Equals(className, StringComparison.OrdinalIgnoreCase));
+
+            var cssTpl = new CustomCssTemplate
+            {
+                Id = existingTpl?.Id ?? Guid.NewGuid().ToString("N"),
+                Name = className,
+                CssCode = rule.AssociatedCss
+            };
+
+            await App.Services.CustomCssTemplates.AddOrUpdateAsync(cssTpl);
+
+            if (existingTpl != null)
+            {
+                int tplIdx = CssTemplates.IndexOf(existingTpl);
+                if (tplIdx >= 0) CssTemplates[tplIdx] = cssTpl;
+            }
+            else
+            {
+                CssTemplates.Add(cssTpl);
+            }
+        }
+
+        CancelEditHtmlRule();
+    }
+
+    private static string ExtractCssClassName(string css, string fallbackName)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(css, @"\.[a-zA-Z0-9_-]+");
+        return match.Success ? match.Value : fallbackName;
+    }
+
+    [RelayCommand]
+    private async Task DeleteHtmlRuleAsync(CustomHtmlRule? rule)
+    {
+        if (rule == null) return;
+        if (EditingHtmlRuleId == rule.Id) CancelEditHtmlRule();
+
+        await App.Services.CustomHtmlRules.DeleteAsync(rule.Id);
+        HtmlRules.Remove(rule);
+    }
+
+    [RelayCommand]
     private async Task AddHtmlRuleAsync()
     {
         if (string.IsNullOrWhiteSpace(NewHtmlRuleName) || string.IsNullOrWhiteSpace(NewHtmlOpenTag))
@@ -214,14 +318,6 @@ public partial class SettingsViewModel : ViewModelBase
         HtmlRules.Add(rule);
 
         NewHtmlRuleName = NewHtmlOpenTag = NewHtmlCloseTag = NewHtmlAssociatedCss = string.Empty;
-    }
-
-    [RelayCommand]
-    private async Task DeleteHtmlRuleAsync(CustomHtmlRule? rule)
-    {
-        if (rule == null) return;
-        await App.Services.CustomHtmlRules.DeleteAsync(rule.Id);
-        HtmlRules.Remove(rule);
     }
 
     [RelayCommand]
@@ -243,9 +339,60 @@ public partial class SettingsViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private void BeginEditCssTemplate(CustomCssTemplate? tpl)
+    {
+        if (tpl == null) return;
+        EditingCssTemplateId = tpl.Id;
+        NewCssTemplateName = tpl.Name;
+        NewCssTemplateCode = tpl.CssCode;
+    }
+
+    [RelayCommand]
+    private void CancelEditCssTemplate()
+    {
+        EditingCssTemplateId = null;
+        NewCssTemplateName = NewCssTemplateCode = string.Empty;
+    }
+
+    [RelayCommand]
+    private async Task SaveCssTemplateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(NewCssTemplateName) || string.IsNullOrWhiteSpace(NewCssTemplateCode))
+            return;
+
+        var tpl = new CustomCssTemplate
+        {
+            Id = EditingCssTemplateId ?? Guid.NewGuid().ToString("N"),
+            Name = NewCssTemplateName.Trim(),
+            CssCode = NewCssTemplateCode.Trim()
+        };
+
+        await App.Services.CustomCssTemplates.AddOrUpdateAsync(tpl);
+
+        int existingIdx = -1;
+        for (int i = 0; i < CssTemplates.Count; i++)
+        {
+            if (CssTemplates[i].Id == tpl.Id)
+            {
+                existingIdx = i;
+                break;
+            }
+        }
+
+        if (existingIdx >= 0)
+            CssTemplates[existingIdx] = tpl;
+        else
+            CssTemplates.Add(tpl);
+
+        CancelEditCssTemplate();
+    }
+
+    [RelayCommand]
     private async Task DeleteCssTemplateAsync(CustomCssTemplate? tpl)
     {
         if (tpl == null) return;
+        if (EditingCssTemplateId == tpl.Id) CancelEditCssTemplate();
+
         await App.Services.CustomCssTemplates.DeleteAsync(tpl.Id);
         CssTemplates.Remove(tpl);
     }

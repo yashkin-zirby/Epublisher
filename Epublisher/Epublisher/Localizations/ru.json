@@ -92,6 +92,10 @@
     "Settings.TemplateNamePlaceholder": "Название стиля (например: Выделенная цитата)",
     "Settings.CssCodePlaceholder": "CSS код...",
     "Settings.AddTemplateButton": "+ Добавить шаблон",
+    "Settings.SaveButton": "Сохранить",
+    "Settings.CancelButton": "Отмена",
+    "Settings.EditTooltip": "Редактировать",
+    "Settings.DeleteTooltip": "Удалить",
     "Theme.System": "Системная",
     "Theme.Dark": "Тёмная",
     "Theme.Light": "Светлая"

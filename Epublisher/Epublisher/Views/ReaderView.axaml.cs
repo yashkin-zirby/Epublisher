@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
@@ -78,6 +79,41 @@ namespace Epublisher.Views
             EpubWebView.Source = null;
             base.OnUnloaded(e);
         }
+        private void OnDrawerBackdropPressed(object? sender, PointerPressedEventArgs e)
+        {
+            if (DataContext is ReaderViewModel vm)
+                vm.IsTocDrawerOpen = false;
+        }
+
+        private async void OnChapterSelectionChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (e.AddedItems.Count == 0 || DataContext is not ReaderViewModel vm)
+                return;
+
+            if (vm.SelectedChapter is { } chapter)
+            {
+                vm.IsTocDrawerOpen = false;
+
+                if (!string.IsNullOrWhiteSpace(chapter.AnchorId))
+                {
+                    string safeId = chapter.AnchorId.Replace("'", "\\'");
+                    // Fallback to base section ID (e.g. "epub-sec-6") if fragment ID uses a different separator
+                    string baseSecId = safeId.Contains('_') ? safeId.Split('_')[0] : safeId;
+
+                    string script = $$"""
+                (function() {
+                    const el = document.getElementById('{{safeId}}') || document.getElementById('{{baseSecId}}');
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                })();
+                """;
+                    await EpubWebView.InvokeScript(script);
+                }
+            }
+        }
+
+
 
         private async Task RestoreSavedScrollPositionAsync()
         {
